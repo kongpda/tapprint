@@ -5,7 +5,7 @@
 //! cannot scan the network.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -62,7 +62,7 @@ pub fn print_png(shared: &Shared, png: &[u8], options: Options) -> Result<(), Jo
             // The page sent something unusable. Say so in the window too.
             let message = format!("The till sent an unusable image: {}", error.0);
             shared.set_status(Tone::Problem, message.as_str());
-            shared.note_job(&message);
+            shared.note_job(&message, false);
             Err(JobError::new(Fault::BadInput, error.0))
         }
     }
@@ -108,11 +108,11 @@ fn write_bytes(
     match &result {
         Ok(()) => {
             shared.set_status(Tone::Ready, done);
-            shared.note_job(done);
+            shared.note_job(done, true);
         }
         Err(error) => {
             shared.set_status(Tone::Problem, error.message.clone());
-            shared.note_job(&error.message);
+            shared.note_job(&error.message, false);
         }
     }
     result
@@ -153,9 +153,7 @@ fn write_tcp(host: &str, port: u16, bytes: &[u8], check_paper: bool) -> Result<(
     check_host(host).map_err(fail)?;
     // `[fe80::1]` is how an IPv6 address is typed. The resolver wants it bare.
     let bare = host.trim_start_matches('[').trim_end_matches(']');
-    let targets = (bare, port)
-        .to_socket_addrs()
-        .map_err(|error| fail(format!("could not resolve {host}: {error}")))?;
+    let targets = resolve(bare, port).map_err(|error| fail(format!("{host}: {error}")))?;
     // A name can resolve to several addresses. Try each one, not only the first.
     let mut last_error = format!("could not resolve {host}");
     let mut connected = None;
@@ -203,6 +201,35 @@ fn write_tcp(host: &str, port: u16, bytes: &[u8], check_paper: bool) -> Result<(
     }
     Ok(())
 }
+
+/// Look up a printer name, giving up after `LOOKUP_TIMEOUT`. The system
+/// lookup has no time limit, and a job waiting on it holds the printer, so
+/// every other job would wait too. A plain address needs no lookup.
+fn resolve(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let (send, receive) = std::sync::mpsc::channel();
+    let name = host.to_string();
+    std::thread::Builder::new()
+        .name("tapprint-lookup".to_string())
+        .spawn(move || {
+            let found = (name.as_str(), port)
+                .to_socket_addrs()
+                .map(Iterator::collect::<Vec<_>>);
+            let _ = send.send(found);
+        })
+        .map_err(|error| format!("could not look up the name: {error}"))?;
+    match receive.recv_timeout(LOOKUP_TIMEOUT) {
+        Ok(Ok(found)) => Ok(found),
+        Ok(Err(error)) => Err(format!("could not resolve the name: {error}")),
+        Err(_) => {
+            Err("the name took too long to resolve. Use the printer's IP address".to_string())
+        }
+    }
+}
+
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Missed paper queries in a row, per printer. Many print servers never
 /// answer, and half a second on every receipt adds up, so after

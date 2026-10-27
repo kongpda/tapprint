@@ -20,4 +20,7 @@ First public release.
 - After any refusal or timeout, no site can ask to pair for 15 s.
 - Requests with `Transfer-Encoding` get `400`, to avoid a tiny_http request-smuggling bug (CVE-2026-66752).
 - The window has a USB / Network switch, and Allow and Don't allow look the same so neither is clicked by habit.
+- Pairing shows a countdown, Esc means Don't allow, and the tray icon gets a dot while a site asks or something is wrong. Remove needs a second click.
+- Failed jobs no longer count as printed. A printer name that does not resolve within 5 s fails the job instead of holding up the printer.
+- A second copy of the app no longer rewrites the settings file before it finds the port taken.
 - The client reads the stored code on every call, so a code paired in another tab is used and is not wiped by an old one.

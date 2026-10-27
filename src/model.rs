@@ -202,6 +202,8 @@ pub struct PairRequest {
     pub client: String,
     /// The origin can already print. A second request is unusual, so the window warns.
     pub known: bool,
+    /// Whole seconds until the page stops waiting.
+    pub seconds_left: u64,
 }
 
 pub struct Shared {
@@ -237,6 +239,7 @@ struct PendingPair {
     serial: u64,
     origin: String,
     client: String,
+    deadline: Instant,
     answer: Option<bool>,
 }
 
@@ -246,11 +249,22 @@ struct SeenClient {
 }
 
 impl Shared {
+    /// Read the settings without writing them. A second copy of the app reads
+    /// them too, then stops because the port is taken. If it wrote here, it
+    /// could undo a change the running copy just saved. Call `persist` once
+    /// the port is bound.
     pub fn load() -> Result<Self, String> {
-        Self::load_from(config_path(), Some(legacy_config_path()))
+        Self::read_from(config_path(), Some(legacy_config_path()))
     }
 
+    #[cfg(test)]
     pub(crate) fn load_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
+        let shared = Self::read_from(path, legacy)?;
+        shared.persist()?;
+        Ok(shared)
+    }
+
+    fn read_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
         let (config, notice) = if path.exists() {
             read_config(&path)?
         } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
@@ -260,9 +274,7 @@ impl Shared {
         } else {
             (fresh_config()?, None)
         };
-        let shared = Self::from_parts(config, path, notice);
-        shared.persist()?;
-        Ok(shared)
+        Ok(Self::from_parts(config, path, notice))
     }
 
     fn from_parts(config: FileConfig, path: PathBuf, notice: Option<String>) -> Self {
@@ -352,6 +364,10 @@ impl Shared {
                         .sites
                         .iter()
                         .any(|site| site.origin == pending.origin),
+                    seconds_left: pending
+                        .deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_secs(),
                 }),
         }
     }
@@ -383,8 +399,9 @@ impl Shared {
         state.clients.truncate(6);
     }
 
-    /// Remember the latest print or drawer pulse. Nothing here is written to disk.
-    pub fn note_job(&self, summary: &str) {
+    /// Remember the latest print or drawer pulse. Only jobs that went out are
+    /// counted. Nothing here is written to disk.
+    pub fn note_job(&self, summary: &str, done: bool) {
         let mut summary = summary.trim().to_string();
         if summary.is_empty() {
             return;
@@ -393,7 +410,9 @@ impl Shared {
             summary = summary.chars().take(80).collect();
         }
         let mut state = self.lock();
-        state.jobs = state.jobs.saturating_add(1);
+        if done {
+            state.jobs = state.jobs.saturating_add(1);
+        }
         state.last_job = Some((summary, Instant::now()));
     }
 
@@ -570,6 +589,7 @@ impl Shared {
             serial,
             origin: origin.clone(),
             client: client.to_string(),
+            deadline,
             answer: None,
         });
         let allowed = loop {
@@ -683,7 +703,7 @@ impl Shared {
         matches!(self.printing.try_lock(), Err(TryLockError::WouldBlock))
     }
 
-    fn persist(&self) -> Result<(), String> {
+    pub fn persist(&self) -> Result<(), String> {
         match self.save() {
             Ok(()) => Ok(()),
             Err(error) => {
@@ -1152,6 +1172,39 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_that_only_reads_the_settings_does_not_write_them() {
+        // A second copy of the app reads the settings, then stops because the
+        // port is taken. Writing on the way out could undo a change the
+        // running copy just saved, such as a site that was removed.
+        let path = isolated("second-copy");
+        let shared = Shared::read_from(path.clone(), None).unwrap();
+        assert!(!path.exists());
+        shared.persist().unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn the_cashier_sees_how_long_the_site_will_wait() {
+        let shared = std::sync::Arc::new(Shared::load_from(isolated("countdown"), None).unwrap());
+        let watcher = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    if let Some(request) = shared.snapshot().pair_request {
+                        shared.answer_pair(request.serial, false);
+                        return request.seconds_left;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("no pairing request showed up");
+            })
+        };
+        let _ = shared.request_pair("https://shop.example", "x", Duration::from_secs(30));
+        let left = watcher.join().unwrap();
+        assert!((25..=30).contains(&left), "{left}");
+    }
+
+    #[test]
     fn an_allowed_site_gets_a_code_that_only_works_from_that_site() {
         let path = isolated("pair");
         let shared = std::sync::Arc::new(Shared::load_from(path.clone(), None).unwrap());
@@ -1405,13 +1458,26 @@ mod tests {
         let shared = Shared::load_from(isolated("clients"), None).unwrap();
         shared.note_client("KHEvents · Chrome");
         shared.note_client("");
-        shared.note_job("Printed");
+        shared.note_job("Printed", true);
         let snapshot = shared.snapshot();
         assert_eq!(snapshot.clients.len(), 1);
         assert!(snapshot.clients[0].live);
         assert_eq!(snapshot.clients[0].label, "KHEvents · Chrome");
         assert_eq!(snapshot.jobs, 1);
         assert!(snapshot.last_job.as_deref().unwrap().starts_with("Printed"));
+
+        // "Jobs printed" must not grow when the printer failed. The failure
+        // still shows as the last job, so the cashier sees what happened.
+        shared.note_job("The printer is out of paper", false);
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.jobs, 1);
+        assert!(
+            snapshot
+                .last_job
+                .as_deref()
+                .unwrap()
+                .contains("out of paper")
+        );
         assert!(!snapshot.last_job.as_deref().unwrap().contains("pairing"));
     }
 }

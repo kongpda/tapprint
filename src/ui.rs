@@ -32,6 +32,7 @@ actions!(
         UseUsb,
         UseNetwork,
         SaveNetwork,
+        DenyPair,
         Quit
     ]
 );
@@ -75,8 +76,13 @@ pub fn run(shared: Arc<Shared>) {
 
 fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
     cx.bind_keys(default_bindings().as_keybindings(Some(DEFAULT_INPUT_CONTEXT)));
-    cx.bind_keys([KeyBinding::new("enter", SaveNetwork, Some("TapPrint"))]);
+    cx.bind_keys([
+        KeyBinding::new("enter", SaveNetwork, Some("TapPrint")),
+        // Esc anywhere in the window turns a waiting site down.
+        KeyBinding::new("escape", DenyPair, None),
+    ]);
     cx.on_action(open_window)
+        .on_action(deny_pair)
         .on_action(print_test)
         .on_action(open_drawer)
         .on_action(use_usb)
@@ -84,7 +90,7 @@ fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
         .on_action(quit);
 
     let tray = Tray::builder()
-        .icon(tray_icon()?)
+        .icon(tray_icon(false)?)
         .tooltip("TapPrint")
         // Windows and Linux: a left click opens the window, a right click the
         // menu. On macOS the menu opens on any click.
@@ -157,6 +163,11 @@ fn sync_window(cx: &mut App) {
         cx.try_global::<AppGlobal>()
             .and_then(|global| *global.window.borrow())
     });
+    // The system may refuse to bring the window to the front while the
+    // cashier works in the browser. Flash the taskbar or bounce the Dock too.
+    if raise && let Some(handle) = window {
+        let _ = handle.update(cx, |_view, window, _cx| window.request_attention());
+    }
     let key = format!(
         "{:?}|{}|{:?}|{}|{:?}|{}",
         snapshot.tone,
@@ -183,10 +194,14 @@ fn sync_window(cx: &mut App) {
         if let Some(global) = cx.try_global::<AppGlobal>() {
             *global.menu_key.borrow_mut() = key;
         }
-        let _ = tray.set_title(
-            Some(tray_title(snapshot.tone, snapshot.pair_request.is_some())),
-            cx,
-        );
+        let asking = snapshot.pair_request.is_some();
+        let _ = tray.set_title(Some(tray_title(snapshot.tone, asking)), cx);
+        // Windows shows no title beside the icon, so the dot and the tooltip
+        // carry the same signal there.
+        let _ = tray.set_tooltip(Some(tray_tooltip(snapshot.tone, asking)), cx);
+        if let Ok(icon) = tray_icon(asking || snapshot.tone == Tone::Problem) {
+            let _ = tray.set_icon(icon, cx);
+        }
         let _ = tray.refresh_menu(cx);
     }
 }
@@ -212,7 +227,17 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
             }
         })
         .unwrap_or_else(|| "Starting".to_string());
-    vec![
+    let mut items = Vec::new();
+    if snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.pair_request.is_some())
+    {
+        items.push(MenuItem::action(
+            "A website wants to print. Answer…",
+            OpenWindow,
+        ));
+    }
+    items.extend([
         MenuItem::action(summary, gpui::NoAction).disabled(true),
         MenuItem::separator(),
         MenuItem::action("Open", OpenWindow),
@@ -225,7 +250,8 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
         ])),
         MenuItem::separator(),
         MenuItem::action("Quit", Quit),
-    ]
+    ]);
+    items
 }
 
 fn open_window(_: &OpenWindow, cx: &mut App) {
@@ -332,6 +358,19 @@ fn use_network(_: &UseNetwork, cx: &mut App) {
     sync_window(cx);
 }
 
+fn deny_pair(_: &DenyPair, cx: &mut App) {
+    let Some(shared) = cx
+        .try_global::<AppGlobal>()
+        .map(|global| global.shared.clone())
+    else {
+        return;
+    };
+    if let Some(request) = shared.snapshot().pair_request {
+        shared.answer_pair(request.serial, false);
+        sync_window(cx);
+    }
+}
+
 fn quit(_: &Quit, cx: &mut App) {
     let tray = cx
         .try_global::<AppGlobal>()
@@ -352,7 +391,18 @@ fn tray_title(tone: Tone, asking: bool) -> &'static str {
     }
 }
 
-fn tray_icon() -> gpui_tray::Result<Icon> {
+fn tray_tooltip(tone: Tone, asking: bool) -> &'static str {
+    if asking {
+        "TapPrint: a website wants to print"
+    } else if tone == Tone::Problem {
+        "TapPrint: needs attention"
+    } else {
+        "TapPrint"
+    }
+}
+
+/// A receipt slip. `alert` adds a dot in the top-right corner.
+fn tray_icon(alert: bool) -> gpui_tray::Result<Icon> {
     // 22 points at 2x. Black with alpha is a menu-bar template: macOS tints it
     // for the menu bar, and the gaps in the slip stay the bar's own color.
     const SIZE: u32 = 44;
@@ -363,7 +413,11 @@ fn tray_icon() -> gpui_tray::Result<Icon> {
             let line = paper
                 && (14..30).contains(&x)
                 && ((14..16).contains(&y) || (20..22).contains(&y) || (26..28).contains(&y));
-            if paper && !line {
+            let (dx, dy) = (x.abs_diff(36), y.abs_diff(8));
+            let dot = alert && dx * dx + dy * dy <= 49;
+            // A clear ring keeps the dot apart from the slip.
+            let ring = alert && !dot && dx * dx + dy * dy <= 100;
+            if dot || (paper && !line && !ring) {
                 let index = ((y * SIZE + x) * 4) as usize;
                 if let Some(slot) = rgba.get_mut(index..index + 4) {
                     slot.copy_from_slice(&[0, 0, 0, 255]);
@@ -384,6 +438,8 @@ struct TillView {
     port: Entity<EditableTextState>,
     /// The first click on New code only asks. The second one replaces it.
     confirm_rotate: bool,
+    /// The site whose Remove was clicked once. A second click removes it.
+    confirm_remove: Option<String>,
     copied: bool,
     /// Read once when the window opens, then kept in step with the toggle.
     autostart: bool,
@@ -408,6 +464,7 @@ impl TillView {
             host,
             port,
             confirm_rotate: false,
+            confirm_remove: None,
             copied: false,
             autostart: crate::autostart::enabled(),
             _subscriptions: subscriptions,
@@ -417,6 +474,7 @@ impl TillView {
     /// Re-read shared state. Any click also drops the one-shot hints.
     fn pull(&mut self, cx: &mut Context<Self>) {
         self.confirm_rotate = false;
+        self.confirm_remove = None;
         self.copied = false;
         self.snapshot = self.shared.snapshot();
         cx.notify();
@@ -564,8 +622,8 @@ impl TillView {
                     )
                     .child(div().text_sm().child(advice))
                     .child(hint(format!(
-                        "The page calls itself \u{201c}{}\u{201d}.",
-                        request.client
+                        "The page calls itself \u{201c}{}\u{201d}. It waits {} more seconds. Esc means Don't allow.",
+                        request.client, request.seconds_left
                     )))
                     .child(
                         div()
@@ -607,6 +665,7 @@ impl TillView {
         }
         for origin in &snapshot.sites {
             let remove = origin.clone();
+            let asked = self.confirm_remove.as_ref() == Some(origin);
             list = list.child(
                 div()
                     .flex()
@@ -616,16 +675,32 @@ impl TillView {
                     .child(div().text_sm().child(origin.clone()))
                     .child(choice(
                         SharedString::from(format!("remove-{origin}")),
-                        "Remove",
-                        false,
+                        if asked {
+                            "Click again to remove"
+                        } else {
+                            "Remove"
+                        },
+                        asked,
                         cx.listener(move |view, _: &ClickEvent, _, cx| {
-                            view.shared.remove_site(&remove);
+                            let confirmed = view.confirm_remove.as_ref() == Some(&remove);
+                            if confirmed {
+                                view.shared.remove_site(&remove);
+                            }
                             view.pull(cx);
+                            if !confirmed {
+                                view.confirm_remove = Some(remove.clone());
+                            }
                         }),
                     )),
             );
         }
-        card().child(label("Allowed sites")).child(list)
+        let mut card = card().child(label("Allowed sites")).child(list);
+        if self.confirm_remove.is_some() {
+            card = card.child(hint(
+                "The site stops printing until it asks again and you allow it.",
+            ));
+        }
+        card
     }
 
     fn raw_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {

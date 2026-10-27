@@ -267,22 +267,24 @@ fn interface_path(list: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> Optio
     if required < 8 {
         return None;
     }
-    let mut buffer = vec![0u8; required as usize];
-    let cb_size: u32 = if cfg!(target_pointer_width = "64") {
+    // u32 words, so the buffer has the 4-byte alignment the struct needs.
+    // A byte buffer may start at any address.
+    let mut words = vec![0u32; (required as usize).div_ceil(4)];
+    words[0] = if cfg!(target_pointer_width = "64") {
         8
     } else {
         6
     };
-    buffer[..4].copy_from_slice(&cb_size.to_le_bytes());
-    let detail = buffer
+    let detail = words
         .as_mut_ptr()
         .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
     unsafe {
         SetupDiGetDeviceInterfaceDetailW(list, interface, Some(detail), required, None, None)
             .ok()?;
     }
+    let buffer: Vec<u8> = words.iter().flat_map(|word| word.to_ne_bytes()).collect();
     let start = offset_of!(SP_DEVICE_INTERFACE_DETAIL_DATA_W, DevicePath);
-    let rest = buffer.get(start..)?;
+    let rest = buffer.get(start..required as usize)?;
     let mut units = Vec::new();
     let mut index = 0;
     while index + 1 < rest.len() {

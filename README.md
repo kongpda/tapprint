@@ -81,12 +81,13 @@ Start TapPrint with the computer by turning on **Start with this computer** in t
 
 ## Using the window
 
-- It lists the sites allowed to print. Remove one to cut its access.
+- It lists the sites allowed to print. Click **Remove** twice to cut a site's access.
 - It shows the manual pairing code, for `curl`, servers, and kiosks.
 - **Allow raw printer commands** is off by default.
 - Choose USB or network and type the printer address. **Use this address** saves it. With two printers of the same model, USB printers are labelled by port.
 - **Print test slip** checks the head. **Open drawer** pulses the cash drawer.
-- The menu bar title changes to `Print !` when something needs attention.
+- When a site asks to pair, the window comes to the front and shows how long the site will wait. Press Esc for **Don't allow**. If the system keeps the window behind, the taskbar flashes (Windows) or the Dock icon bounces (macOS).
+- The tray icon gets a dot, and the menu bar title shows `Print ?` or `Print !`, when a site is asking or something needs attention. Windows shows the dot and the tooltip only.
 
 ## HTTP API
 

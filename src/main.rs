@@ -26,7 +26,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Err(error) = http::serve(Arc::clone(&shared)) {
+    // Bind first. Only the copy that owns the port writes the settings file.
+    if let Err(error) = http::serve(Arc::clone(&shared)).and_then(|()| shared.persist()) {
         notice::fatal(&error);
         return ExitCode::from(1);
     }
