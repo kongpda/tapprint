@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TapPrint demo</title>
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
+  button { font: inherit; padding: .5rem 1rem; margin: 0 .5rem .5rem 0; }
+  canvas { border: 1px solid #ccc; max-width: 100%; display: block; margin: 1rem 0; }
+  #line { padding: .5rem; background: #f3f3f3; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>TapPrint demo</h1>
+<p>Start TapPrint on this computer, then serve this folder's parent (for example <code>python3 -m http.server</code>) and open <code>/examples/</code> in Chrome or Edge.</p>
+<p id="line">Checking...</p>
+<button id="pair">Pair</button>
+<button id="print">Print</button>
+<button id="drawer">Print + drawer</button>
+<label><input type="checkbox" id="dither"> Dither (photos)</label>
+<canvas id="receipt" width="512" height="420"></canvas>
+
+<script type="module">
+import { TapPrint, TapPrintError } from "../client/tapprint.js";
+
+const till = new TapPrint({ clientName: "MyShop" });
+const line = document.getElementById("line");
+const canvas = document.getElementById("receipt");
+
+function drawReceipt() {
+  const c = canvas.getContext("2d");
+  c.fillStyle = "#fff";
+  c.fillRect(0, 0, canvas.width, canvas.height);
+  c.fillStyle = "#000";
+  c.textAlign = "center";
+  c.font = "bold 44px sans-serif";
+  c.fillText("MyShop", 256, 60);
+  c.font = "24px sans-serif";
+  c.fillText("Receipt 0001", 256, 96);
+  c.textAlign = "left";
+  const rows = [["Coffee", "2.50"], ["Croissant", "3.00"], ["Water", "1.00"]];
+  rows.forEach(([name, price], i) => {
+    c.fillText(name, 20, 160 + i * 40);
+    c.textAlign = "right";
+    c.fillText(price, 492, 160 + i * 40);
+    c.textAlign = "left";
+  });
+  c.fillRect(20, 290, 472, 3);
+  c.font = "bold 32px sans-serif";
+  c.fillText("Total", 20, 335);
+  c.textAlign = "right";
+  c.fillText("6.50", 492, 335);
+  c.textAlign = "center";
+  c.font = "30px 'Khmer OS', 'Noto Sans Khmer', sans-serif";
+  c.fillText("សូមអរគុណ", 256, 392);
+}
+
+async function refresh() {
+  try {
+    const s = await till.status();
+    line.textContent = `Printer ${s.state}, ${s.transport}, ${s.paper_mm} mm. ` +
+      (s.paired ? "This site is paired." : "This site is not paired.");
+  } catch (err) {
+    line.textContent = err.message;
+  }
+}
+
+async function run(action) {
+  try {
+    await action();
+    line.textContent = "Done.";
+  } catch (err) {
+    line.textContent = err instanceof TapPrintError ? `${err.reason}: ${err.message}` : String(err);
+  }
+  if (!line.textContent.startsWith("Done")) return;
+  setTimeout(refresh, 1500);
+}
+
+document.getElementById("pair").onclick = async () => {
+  line.textContent = "Click Allow in the TapPrint window...";
+  await run(() => till.pair());
+};
+const printWith = (drawer) => () => run(async () => {
+  if (!till.isPaired()) await till.pair();
+  await till.print(canvas, { drawer, dither: document.getElementById("dither").checked });
+});
+document.getElementById("print").onclick = printWith(false);
+document.getElementById("drawer").onclick = printWith(true);
+
+// Draw after fonts load so the Khmer text uses a real font.
+document.fonts.ready.then(drawReceipt);
+drawReceipt();
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+[package]
+name = "tapprint"
+version = "0.1.0"
+edition = "2024"
+description = "Till-side helper that prints a receipt bitmap to a USB or network thermal printer."
+license = "MIT"
+repository = "https://github.com/kongpda/tapprint"
+homepage = "https://github.com/kongpda/tapprint"
+readme = "README.md"
+keywords = ["thermal-printer", "escpos", "receipt", "pos", "tray"]
+categories = ["hardware-support", "gui"]
+publish = false
+
+[dependencies]
+getrandom = "0.3"
+gpui-ce = "0.3"
+gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
+gpui_ce_elements = "0.3"
+gpui_ce_platform = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Not imported. Listed only for `vendored`, so rusb links a bundled libusb
+# and the till needs no Homebrew or system package.
+libusb1-sys = { version = "0.7", features = ["vendored"] }
+rusb = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

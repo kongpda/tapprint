@@ -1,0 +1,129 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds all platforms and creates a GitHub
+# Release. The artifacts are UNSIGNED: the macOS app has an ad-hoc signature
+# only, and the Windows exe has no Authenticode signature. See the README
+# "Signing" section for how to sign a build yourself.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both architectures
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+      # These steps replicate scripts/macos-app.sh, but with a universal binary.
+      - name: Bundle TapPrint.app
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          mkdir -p dist
+          lipo -create -output dist/tapprint \
+            target/aarch64-apple-darwin/release/tapprint \
+            target/x86_64-apple-darwin/release/tapprint
+          swift scripts/draw-macos-icon.swift dist/AppIcon.iconset
+          iconutil --convert icns --output dist/AppIcon.icns dist/AppIcon.iconset
+          app=dist/TapPrint.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp dist/tapprint "$app/Contents/MacOS/tapprint"
+          cp dist/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+          chmod 755 "$app/Contents/MacOS/tapprint"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key><string>en</string>
+            <key>CFBundleDisplayName</key><string>TapPrint</string>
+            <key>CFBundleExecutable</key><string>tapprint</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
+            <key>CFBundleIdentifier</key><string>com.khable.tapprint</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundleName</key><string>TapPrint</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version}</string>
+            <key>CFBundleVersion</key><string>${version}</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          codesign --force --sign - "$app"
+          ditto -c -k --keepParent "$app" dist/TapPrint-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/TapPrint-macos-universal.zip
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target\release\tapprint.exe,LICENSE,README.md -DestinationPath dist\TapPrint-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/TapPrint-windows-x86_64.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
+            libssl-dev libudev-dev libasound2-dev libzstd-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist/tapprint-linux-x86_64
+          cp target/release/tapprint LICENSE README.md dist/tapprint-linux-x86_64/
+          tar -C dist -czf dist/TapPrint-linux-x86_64.tar.gz tapprint-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/TapPrint-linux-x86_64.tar.gz
+
+  release:
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        working-directory: artifacts
+        run: sha256sum * > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
