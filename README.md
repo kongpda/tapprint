@@ -23,7 +23,7 @@ Download the build for your system from [GitHub Releases](https://github.com/kon
 
 Builds are not signed yet.
 
-- **macOS.** The app is ad-hoc signed only. Right-click `TapPrint.app` and choose **Open**. Or run `xattr -dr com.apple.quarantine /Applications/TapPrint.app`.
+- **macOS.** The app is ad-hoc signed only, so macOS refuses it the first time. Open it once, then go to **System Settings > Privacy & Security** and click **Open Anyway** (macOS 15 and later no longer offer right-click **Open**). Or run `xattr -dr com.apple.quarantine /Applications/TapPrint.app`.
 - **Windows.** SmartScreen shows "Windows protected your PC" once. Choose **More info**, then **Run anyway**.
 - **Linux.** Unpack the tar.gz and run `tapprint`. USB printers need a udev rule (below).
 
@@ -35,10 +35,10 @@ On Windows the printer must use the USB print driver Windows installs when it is
 
 ### Linux udev rule
 
-Create `/etc/udev/rules.d/99-tapprint.rules`:
+Create `/etc/udev/rules.d/70-tapprint.rules`. The number must be below 73, so the `uaccess` tag takes effect:
 
 ```
-# Give the logged-in user and the plugdev group access to USB printers (interface class 07).
+# Give the logged-in user, and the plugdev group, access to USB printers (interface class 07).
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:07????:*", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 ```
 
@@ -48,12 +48,16 @@ If your system does not set `ID_USB_INTERFACES`, match one printer by ID instead
 SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0202", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 ```
 
-Then reload and replug:
+`uaccess` gives access to whoever is logged in at the screen. The group is for other users, such as a kiosk account. Debian and Ubuntu have `plugdev`. On Fedora or Arch, use a group that exists there, or create one with `sudo groupadd plugdev`.
+
+Then add your user to the group, reload the rules, and replug the printer:
 
 ```shell
+sudo usermod -aG plugdev "$USER"
 sudo udevadm control --reload-rules && sudo udevadm trigger
-sudo usermod -aG plugdev "$USER"   # log out and in again
 ```
+
+Log out and in again for the group to apply.
 
 The Linux kernel's `usblp` driver claims printer-class devices. TapPrint detaches it while it prints and gives it back after.
 
@@ -90,6 +94,8 @@ TapPrint listens on `127.0.0.1` and the saved port (9240 by default). If the por
 
 The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Use Chrome or Edge. Safari may block an HTTPS page from calling the loopback address.
 
+Chrome 142 and later ask once per site before a page can reach apps on this computer (Local Network Access). Chrome 145 and later call this permission "Apps on device". The person at the till must click **Allow**. If they block it, the client reports `unreachable`. Reset it in the site settings (the icon left of the address). A cross-origin till page inside an iframe needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
+
 ### Errors
 
 ```json
@@ -108,7 +114,7 @@ The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allow
 | 413 | `too_large` | Body over 1.5 MB. |
 | 415 | `unsupported_type` | `Content-Type` is not `image/png` or `application/vnd.escpos`. |
 | 421 | `unknown_host` | Host is not `127.0.0.1` or `localhost`. |
-| 429 | `pair_blocked` | This origin was denied in the last 10 minutes, or left a request unanswered in the last minute. |
+| 429 | `pair_blocked` | This origin was denied in the last 10 minutes or left a request unanswered in the last minute. Also returned to every site for 15 s after any refusal or timeout. |
 | 500 | `pair_failed` | Allowed, but the settings could not be saved. No code was issued. |
 | 502 | `maybe_printed` | Part of the receipt may have printed. Check the paper before retrying, or the customer gets two. TapPrint resets the printer so the next receipt is clean. |
 | 502 | `printer_error` | The printer failed. |
@@ -189,7 +195,7 @@ curl -X POST http://127.0.0.1:9240/v1/print \
   --data-binary @receipt.png
 
 # Raw ESC/POS (needs "Allow raw printer commands"): text, feed, cut
-printf 'Hello\n\n\n\x1dV\x42\x00' | curl -X POST http://127.0.0.1:9240/v1/print \
+printf 'Hello\n\n\n\035V\102\000' | curl -X POST http://127.0.0.1:9240/v1/print \
   -H "Authorization: Bearer <pairing code>" \
   -H "Content-Type: application/vnd.escpos" \
   --data-binary @-
@@ -231,7 +237,7 @@ TapPrint was called Receipt Till. On first start it reads an old `Receipt Till` 
 - TapPrint listens on loopback only (`127.0.0.1`). Nothing outside the computer can reach it.
 - The `Host` header must be `127.0.0.1` or `localhost`. A site that rebinds its own domain to this computer gets `421`.
 - Each site gets its own code from `/v1/pair`, after the person at the till clicks Allow. The code works only with that site's `Origin`. Remove the site in the window to revoke it.
-- Denied origins are blocked for 10 minutes, and only one pairing request waits at a time, so a page cannot spam the window.
+- Denied origins are blocked for 10 minutes. Only one pairing request waits at a time, and after any refusal or timeout no site can ask for 15 s. A page can still ask again after that, so deny and close a page that keeps asking.
 - The manual code (128-bit) works from anywhere. Keep it private. There is no lockout: a 128-bit code cannot be guessed, and a lockout would let any open tab block the till.
 - Raw ESC/POS is off by default, because raw commands can rewrite printer settings.
 - The page never gives the printer address. It stays in the window, so a code can print and cannot be used to scan your LAN.

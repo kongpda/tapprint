@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::escpos;
@@ -25,6 +25,9 @@ const DENY_FOR: Duration = Duration::from_secs(600);
 /// A site that asked and got no answer waits this long before asking again,
 /// so a page cannot pop the window up over and over.
 const UNANSWERED_FOR: Duration = Duration::from_secs(60);
+/// After any No or timeout, no site may ask for this long. One page can own
+/// many origins, and must not be able to keep a prompt up by rotating them.
+const PROMPT_GAP: Duration = Duration::from_secs(15);
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
@@ -226,6 +229,8 @@ struct State {
     pair_serial: u64,
     /// Origins that may not ask again until the given time.
     blocked: Vec<(String, Instant)>,
+    /// No site may ask before this time. See `PROMPT_GAP`.
+    quiet_until: Option<Instant>,
 }
 
 struct PendingPair {
@@ -245,7 +250,7 @@ impl Shared {
         Self::load_from(config_path(), Some(legacy_config_path()))
     }
 
-    fn load_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
+    pub(crate) fn load_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
         let (config, notice) = if path.exists() {
             read_config(&path)?
         } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
@@ -279,6 +284,7 @@ impl Shared {
                 pairing: None,
                 pair_serial: 0,
                 blocked: Vec::new(),
+                quiet_until: None,
             }),
             pair_answered: Condvar::new(),
             printing: Mutex::new(()),
@@ -461,9 +467,10 @@ impl Shared {
         let _ = self.persist();
     }
 
-    pub fn set_transport(&self, transport: Transport) {
+    /// `Err` when it could not be saved. The status already says so.
+    pub fn set_transport(&self, transport: Transport) -> Result<(), String> {
         self.lock().config.transport = transport;
-        let _ = self.persist();
+        self.persist()
     }
 
     pub fn select_usb(&self, id: String) {
@@ -502,8 +509,9 @@ impl Shared {
             (state.config.tcp_host.clone(), state.config.tcp_port)
         };
         check_host(host.trim())?;
-        self.set_transport(Transport::Tcp);
-        self.set_status(Tone::Ready, format!("Using network printer {host}:{port}"));
+        if self.set_transport(Transport::Tcp).is_ok() {
+            self.set_status(Tone::Ready, format!("Using network printer {host}:{port}"));
+        }
         Ok(())
     }
 
@@ -548,7 +556,9 @@ impl Shared {
         let mut state = self.lock();
         let now = Instant::now();
         state.blocked.retain(|(_, until)| *until > now);
-        if state.blocked.iter().any(|(blocked, _)| *blocked == origin) {
+        if state.blocked.iter().any(|(blocked, _)| *blocked == origin)
+            || state.quiet_until.is_some_and(|until| until > now)
+        {
             return Err(PairError::Blocked);
         }
         if state.pairing.is_some() {
@@ -575,6 +585,7 @@ impl Shared {
             if now >= deadline {
                 state.pairing = None;
                 state.blocked.push((origin.clone(), now + UNANSWERED_FOR));
+                state.quiet_until = Some(now + PROMPT_GAP);
                 note_pairing(&mut state, format!("{origin} stopped waiting to pair"));
                 return Err(PairError::TimedOut);
             }
@@ -585,9 +596,9 @@ impl Shared {
         };
         state.pairing = None;
         if !allowed {
-            state
-                .blocked
-                .push((origin.clone(), Instant::now() + DENY_FOR));
+            let now = Instant::now();
+            state.blocked.push((origin.clone(), now + DENY_FOR));
+            state.quiet_until = Some(now + PROMPT_GAP);
             note_pairing(&mut state, format!("{origin} was not allowed to print"));
             return Err(PairError::Denied);
         }
@@ -615,6 +626,9 @@ impl Shared {
             {
                 state.config.sites.push(previous);
             }
+            drop(state);
+            // Another save may have written the new code in the meantime.
+            let _ = self.persist();
             return Err(PairError::Failed(error));
         }
         Ok(code)
@@ -665,7 +679,8 @@ impl Shared {
     }
 
     pub fn printer_busy(&self) -> bool {
-        self.printing.try_lock().is_err()
+        // A job that panicked leaves the lock poisoned, not held.
+        matches!(self.printing.try_lock(), Err(TryLockError::WouldBlock))
     }
 
     fn persist(&self) -> Result<(), String> {
@@ -1280,6 +1295,34 @@ mod tests {
         cashier.join().unwrap();
         assert!(matches!(result, Err(PairError::Failed(_))), "{result:?}");
         assert!(shared.snapshot().sites.is_empty());
+    }
+
+    #[test]
+    fn after_a_no_every_site_waits_before_it_can_ask() {
+        // One page can own many origins. Without a pause it could keep a
+        // prompt on screen by asking from a new one each time.
+        let shared = std::sync::Arc::new(Shared::load_from(isolated("gap"), None).unwrap());
+        let cashier = answer_when_asked(&shared, false);
+        let _ = shared.request_pair("https://a1.evil.example", "x", Duration::from_secs(5));
+        cashier.join().unwrap();
+        assert_eq!(
+            shared.request_pair("https://a2.evil.example", "x", Duration::from_secs(5)),
+            Err(PairError::Blocked)
+        );
+    }
+
+    #[test]
+    fn a_job_that_panicked_does_not_stop_the_printer_scan() {
+        // The scan skips while a job runs. A crashed job must not look like
+        // one that runs forever, or a replugged printer is never seen.
+        let shared = std::sync::Arc::new(Shared::load_from(isolated("poison"), None).unwrap());
+        let crashing = std::sync::Arc::clone(&shared);
+        let _ = std::thread::spawn(move || {
+            let _job = crashing.printer_lock();
+            panic!("job crashed");
+        })
+        .join();
+        assert!(!shared.printer_busy());
     }
 
     #[test]

@@ -7,6 +7,7 @@
 <style>
   body { font: 16px/1.4 system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
   button { font: inherit; padding: .5rem 1rem; margin: 0 .5rem .5rem 0; }
+  button:disabled { opacity: .5; }
   canvas { border: 1px solid #ccc; max-width: 100%; display: block; margin: 1rem 0; }
   #line { padding: .5rem; background: #f3f3f3; border-radius: 4px; }
 </style>
@@ -14,7 +15,7 @@
 <body>
 <h1>TapPrint demo</h1>
 <p>Start TapPrint on this computer, then serve this folder's parent (for example <code>python3 -m http.server</code>) and open <code>/examples/</code> in Chrome or Edge.</p>
-<p id="line">Checking...</p>
+<p id="line" role="status" aria-live="polite">Checking...</p>
 <button id="pair">Pair</button>
 <button id="print">Print</button>
 <button id="drawer">Print + drawer</button>
@@ -66,15 +67,20 @@ async function refresh() {
   }
 }
 
+const buttons = document.querySelectorAll("button");
+
 async function run(action) {
+  // One request at a time, so a double click cannot print twice.
+  buttons.forEach((b) => (b.disabled = true));
   try {
     await action();
     line.textContent = "Done.";
+    setTimeout(refresh, 1500);
   } catch (err) {
     line.textContent = err instanceof TapPrintError ? `${err.reason}: ${err.message}` : String(err);
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
   }
-  if (!line.textContent.startsWith("Done")) return;
-  setTimeout(refresh, 1500);
 }
 
 document.getElementById("pair").onclick = async () => {
@@ -82,8 +88,17 @@ document.getElementById("pair").onclick = async () => {
   await run(() => till.pair());
 };
 const printWith = (drawer) => () => run(async () => {
+  const options = { drawer, dither: document.getElementById("dither").checked };
   if (!till.isPaired()) await till.pair();
-  await till.print(canvas, { drawer, dither: document.getElementById("dither").checked });
+  try {
+    await till.print(canvas, options);
+  } catch (err) {
+    // The code was revoked, for example by Remove in the TapPrint window. Pair once more.
+    if (!(err instanceof TapPrintError) || err.reason !== "unauthorized") throw err;
+    line.textContent = "Click Allow in the TapPrint window...";
+    await till.pair();
+    await till.print(canvas, options);
+  }
 });
 document.getElementById("print").onclick = printWith(false);
 document.getElementById("drawer").onclick = printWith(true);

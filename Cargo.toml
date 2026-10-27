@@ -36,3 +36,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[package.metadata.cargo-machete]
+# `gpui-ce` is imported as `gpui`. `libusb1-sys` is listed only for `vendored`.
+ignored = ["gpui-ce", "libusb1-sys"]

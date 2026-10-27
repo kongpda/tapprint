@@ -24,7 +24,7 @@ export interface TapPrintStatus {
   ok: boolean;
   paired: boolean;
   port: number;
-  paper_mm: number;
+  paper_mm: 58 | 80;
   transport: "usb" | "tcp";
   state: "ready" | "busy" | "problem";
   raw_enabled: boolean;
@@ -34,12 +34,33 @@ export interface TapPrintStatus {
   status?: string;
 }
 
+export type TapPrintReason =
+  | "bad_request"
+  | "unknown_host"
+  | "not_found"
+  | "too_large"
+  | "unsupported_type"
+  | "raw_disabled"
+  | "unauthorized"
+  | "pair_denied"
+  | "pair_timeout"
+  | "pair_busy"
+  | "pair_blocked"
+  | "pair_failed"
+  /** Nothing was printed. Load paper and print again. */
+  | "paper_out"
+  /** Part of the job may have printed. Printing again may give two receipts. */
+  | "maybe_printed"
+  | "printer_error"
+  /** TapPrint is not running, or the browser blocked local network access. */
+  | "unreachable"
+  | "bad_response";
+
 export class TapPrintError extends Error {
-  constructor(message: string, status: number, reason: string);
+  constructor(message: string, status: number, reason: TapPrintReason);
   /** HTTP status, or 0 when TapPrint could not be reached. */
   status: number;
-  /** API reason code, or "unreachable" / "bad_response". */
-  reason: string;
+  reason: TapPrintReason;
 }
 
 export class TapPrint {

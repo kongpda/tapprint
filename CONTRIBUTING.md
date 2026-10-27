@@ -20,7 +20,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs the same checks on macOS, Windows, and Linux.
+CI runs fmt, clippy, and `cargo audit` on Linux, and the tests on macOS, Windows, and Linux.
 
 ## Style
 

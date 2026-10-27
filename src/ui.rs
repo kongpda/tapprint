@@ -313,8 +313,9 @@ fn use_usb(_: &UseUsb, cx: &mut App) {
     else {
         return;
     };
-    shared.set_transport(Transport::Usb);
-    shared.set_status(Tone::Ready, "Using USB");
+    if shared.set_transport(Transport::Usb).is_ok() {
+        shared.set_status(Tone::Ready, "Using USB");
+    }
     sync_window(cx);
 }
 
@@ -490,10 +491,6 @@ impl Render for TillView {
             Tone::Busy => (BUSY_BG, BUSY_FG),
             Tone::Problem => (BAD_BG, BAD_FG),
         };
-        let transport = match snapshot.transport {
-            Transport::Usb => "USB",
-            Transport::Tcp => "Network",
-        };
         let saved_host = if snapshot.tcp_host.is_empty() {
             "No network printer saved".to_string()
         } else {
@@ -522,16 +519,13 @@ impl Render for TillView {
                     .child(self.sites_card(cx, &snapshot))
                     .child(self.code_card(cx, &snapshot))
                     .child(self.paper_card(cx, &snapshot))
-                    .child(self.printer_card(cx, &snapshot, transport))
+                    .child(self.printer_card(cx, &snapshot))
                     .child(self.network_card(cx, &saved_host))
                     .child(self.job_buttons(cx))
                     .child(self.startup_card(cx))
                     .child(self.raw_card(cx, &snapshot))
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(MUTED))
-                            .child("The printer's USB port must be in Printer Class. If the system already has a queue for it, remove that queue and plug it in again.")
+                        hint("The printer's USB port must be in Printer Class. If the system already has a queue for it, remove that queue and plug it in again.")
                             .child(
                                 div().mt_1().child(format!("Settings file {}", snapshot.config_path)),
                             ),
@@ -549,16 +543,12 @@ impl TillView {
     ) -> Option<gpui::Div> {
         let request = snapshot.pair_request.clone()?;
         let serial = request.serial;
+        // The address above is the only thing a page cannot fake. The name
+        // below is whatever the page chose to call itself.
         let advice = if request.known {
-            format!(
-                "From {}. This site can already print, so it should not need to ask. Allow only if you cleared this browser or moved the till. Its old code stops working.",
-                request.client
-            )
+            "This site can already print, so it should not need to ask. Allow only if you just cleared this browser or set up the till again. The code it had before stops working."
         } else {
-            format!(
-                "From {}. Allow it only if this is your till or shop site. It will be able to print and open the drawer.",
-                request.client
-            )
+            "Allow only if this is your shop's till site and you just pressed print or connect on it. It will be able to print and open the drawer. If unsure, choose Don't allow."
         };
         Some(
             div().px_4().pb_3().child(
@@ -572,21 +562,26 @@ impl TillView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(request.origin),
                     )
-                    .child(div().text_xs().child(advice))
+                    .child(div().text_sm().child(advice))
+                    .child(hint(format!(
+                        "The page calls itself \u{201c}{}\u{201d}.",
+                        request.client
+                    )))
                     .child(
                         div()
                             .flex()
                             .gap_2()
-                            .child(button(
+                            // Same weight for both, so neither is the obvious click.
+                            .child(choice(
                                 "pair-allow",
                                 "Allow",
-                                true,
+                                false,
                                 cx.listener(move |view, _: &ClickEvent, _, cx| {
                                     view.shared.answer_pair(serial, true);
                                     view.pull(cx);
                                 }),
                             ))
-                            .child(button(
+                            .child(choice(
                                 "pair-deny",
                                 "Don't allow",
                                 false,
@@ -636,32 +631,21 @@ impl TillView {
     fn raw_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         card()
             .child(label("Allow raw printer commands"))
-            .child(div().text_xs().text_color(rgb(MUTED)).child(
+            .child(hint(
                 "Lets paired pages send ESC/POS bytes as they are. Leave this off unless your till software needs it: raw commands can change printer settings.",
             ))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(choice(
-                        "raw-on",
-                        "On",
-                        snapshot.allow_raw,
-                        cx.listener(|view, _: &ClickEvent, _, cx| {
-                            view.shared.set_allow_raw(true);
-                            view.pull(cx);
-                        }),
-                    ))
-                    .child(choice(
-                        "raw-off",
-                        "Off",
-                        !snapshot.allow_raw,
-                        cx.listener(|view, _: &ClickEvent, _, cx| {
-                            view.shared.set_allow_raw(false);
-                            view.pull(cx);
-                        }),
-                    )),
-            )
+            .child(on_off(
+                ("raw-on", "raw-off"),
+                snapshot.allow_raw,
+                cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.shared.set_allow_raw(true);
+                    view.pull(cx);
+                }),
+                cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.shared.set_allow_raw(false);
+                    view.pull(cx);
+                }),
+            ))
     }
 
     fn activity_card(&self, snapshot: &crate::model::Snapshot) -> gpui::Div {
@@ -694,21 +678,11 @@ impl TillView {
         let jobs = if snapshot.jobs == 1 { "job" } else { "jobs" };
         card()
             .child(label("Connected"))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child("Till pages open on this computer."),
-            )
+            .child(hint("Till pages open on this computer."))
             .child(rows)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child(format!("Last job: {last}")),
-            )
-            .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
-                "{} {jobs} since open  ·  {}",
+            .child(hint(format!("Last job: {last}")))
+            .child(hint(format!(
+                "{} {jobs} printed since TapPrint opened  ·  version {}",
                 snapshot.jobs,
                 env!("CARGO_PKG_VERSION")
             )))
@@ -716,7 +690,7 @@ impl TillView {
 
     fn code_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         let copy_label = if self.copied { "Copied" } else { "Copy code" };
-        let (rotate_label, hint) = if self.confirm_rotate {
+        let (rotate_label, rotate_hint) = if self.confirm_rotate {
             (
                 "Replace code",
                 "Anything using this code stops printing until you paste the new one. Allowed sites keep working. Click Replace code to go ahead.",
@@ -739,18 +713,18 @@ impl TillView {
                     .line_height(px(28.))
                     .child(grouped_code(&snapshot.pairing_code)),
             )
-            .child(div().text_xs().text_color(rgb(MUTED)).child(hint))
+            .child(hint(rotate_hint))
             .child(
                 div()
                     .flex()
                     .gap_2()
-                    .child(button(
+                    .child(choice(
                         "copy-code",
                         copy_label,
                         true,
                         cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)),
                     ))
-                    .child(button(
+                    .child(choice(
                         "new-code",
                         rotate_label,
                         false,
@@ -785,12 +759,7 @@ impl TillView {
         )
     }
 
-    fn printer_card(
-        &self,
-        cx: &mut Context<Self>,
-        snapshot: &crate::model::Snapshot,
-        transport: &str,
-    ) -> gpui::Div {
+    fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         let mut list = div().flex().flex_col().gap_2();
         if snapshot.printers.is_empty() {
             let message = if snapshot.listed {
@@ -820,13 +789,37 @@ impl TillView {
                 ));
             }
         }
+        let usb = snapshot.transport == Transport::Usb;
         card()
-            .child(label("USB printer"))
+            .child(label("Send receipts by"))
             .child(
                 div()
-                    .text_sm()
-                    .child(format!("Sending receipts over {transport}")),
+                    .flex()
+                    .gap_2()
+                    .child(choice(
+                        "transport-usb",
+                        "USB",
+                        usb,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            if view.shared.set_transport(Transport::Usb).is_ok() {
+                                view.shared.set_status(Tone::Ready, "Using USB");
+                            }
+                            view.pull(cx);
+                        }),
+                    ))
+                    .child(choice(
+                        "transport-network",
+                        "Network",
+                        !usb,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            if let Err(error) = view.shared.use_saved_network() {
+                                view.shared.set_status(Tone::Problem, error);
+                            }
+                            view.pull(cx);
+                        }),
+                    )),
             )
+            .child(label("USB printer"))
             .child(list)
     }
 
@@ -835,11 +828,9 @@ impl TillView {
             .key_context("TapPrint")
             .on_action(cx.listener(Self::on_save))
             .child(label("Network printer"))
-            .child(
-                div().text_xs().text_color(rgb(MUTED)).child(
-                    "Port 9100 is the usual raw printer port. Press Enter to use this address.",
-                ),
-            )
+            .child(hint(
+                "Port 9100 is the usual raw printer port. Press Enter to use this address.",
+            ))
             .child(
                 div()
                     .flex()
@@ -877,13 +868,8 @@ impl TillView {
                             .text_sm(),
                     ),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child(saved_host.to_string()),
-            )
-            .child(button(
+            .child(hint(saved_host.to_string()))
+            .child(choice(
                 "use-network",
                 "Use this address",
                 true,
@@ -894,33 +880,22 @@ impl TillView {
     fn startup_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         card()
             .child(label("Start with this computer"))
-            .child(div().text_xs().text_color(rgb(MUTED)).child(
+            .child(hint(
                 "Turn this on for the till, so receipts print after a restart without opening the app.",
             ))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(choice(
-                        "autostart-on",
-                        "On",
-                        self.autostart,
-                        cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(true, cx)),
-                    ))
-                    .child(choice(
-                        "autostart-off",
-                        "Off",
-                        !self.autostart,
-                        cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(false, cx)),
-                    )),
-            )
+            .child(on_off(
+                ("autostart-on", "autostart-off"),
+                self.autostart,
+                cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(true, cx)),
+                cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(false, cx)),
+            ))
     }
 
     fn job_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
             .flex()
             .gap_2()
-            .child(button(
+            .child(choice(
                 "test-slip",
                 "Print test slip",
                 true,
@@ -928,7 +903,7 @@ impl TillView {
                     view.job("Printing a test slip", print::print_test, cx)
                 }),
             ))
-            .child(button(
+            .child(choice(
                 "open-drawer",
                 "Open drawer",
                 false,
@@ -963,7 +938,7 @@ fn header(snapshot: &crate::model::Snapshot, pill_bg: u32, pill_fg: u32) -> gpui
                 .text_sm()
                 .child(snapshot.status.clone()),
         )
-        .child(div().text_xs().text_color(rgb(MUTED)).child(format!(
+        .child(hint(format!(
             "127.0.0.1:{}  ·  only this computer",
             snapshot.port
         )))
@@ -987,6 +962,25 @@ fn label(text: &'static str) -> gpui::Div {
         .child(text)
 }
 
+/// Small grey help text under a heading.
+fn hint(text: impl Into<SharedString>) -> gpui::Div {
+    div().text_xs().text_color(rgb(MUTED)).child(text.into())
+}
+
+/// An On / Off pair. The current setting is the dark one.
+fn on_off(
+    (on_id, off_id): (&'static str, &'static str),
+    on: bool,
+    turn_on: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    turn_off: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Div {
+    div()
+        .flex()
+        .gap_2()
+        .child(choice(on_id, "On", on, turn_on))
+        .child(choice(off_id, "Off", !on, turn_off))
+}
+
 fn grouped_code(code: &str) -> String {
     let mut grouped = String::with_capacity(code.len().saturating_add(code.len() / 4));
     for (index, ch) in code.chars().enumerate() {
@@ -996,30 +990,6 @@ fn grouped_code(code: &str) -> String {
         grouped.push(ch);
     }
     grouped
-}
-
-fn button(
-    id: &'static str,
-    label: &'static str,
-    primary: bool,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
-    let (background, foreground) = if primary {
-        (rgb(INK), rgb(CARD))
-    } else {
-        (rgb(SOFT), rgb(INK))
-    };
-    div()
-        .id(id)
-        .on_click(on_click)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(background)
-        .text_color(foreground)
-        .text_sm()
-        .cursor_pointer()
-        .child(label)
 }
 
 fn choice(

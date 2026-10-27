@@ -3,7 +3,7 @@ name: Release
 # Pushing a tag such as v0.1.0 builds all platforms and creates a GitHub
 # Release. The artifacts are UNSIGNED: the macOS app has an ad-hoc signature
 # only, and the Windows exe has no Authenticode signature. See the README
-# "Signing" section for how to sign a build yourself.
+# "Signing a Mac build" section for how to sign a build yourself.
 
 on:
   push:
@@ -13,13 +13,32 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # The tag must match the version in Cargo.toml, so a release never ships
+  # a binary that reports the wrong version.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
   macos:
+    needs: check
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -72,9 +91,12 @@ jobs:
           path: dist/TapPrint-macos-universal.zip
 
   windows:
+    needs: check
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
@@ -89,9 +111,13 @@ jobs:
           path: dist/TapPrint-windows-x86_64.zip
 
   linux:
-    runs-on: ubuntu-latest
+    needs: check
+    # The oldest supported runner, so the binary runs on older glibc too.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux dependencies
         run: |
@@ -115,6 +141,8 @@ jobs:
   release:
     needs: [macos, windows, linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -127,3 +155,5 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+          # A tag such as v0.2.0-rc.1 makes a pre-release.
+          prerelease: ${{ contains(github.ref_name, '-') }}

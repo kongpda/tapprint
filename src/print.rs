@@ -176,8 +176,8 @@ fn write_tcp(host: &str, port: u16, bytes: &[u8], check_paper: bool) -> Result<(
     if check_paper && !is_silent(&key) {
         match tcp_paper_out(&mut stream) {
             Some(true) => return Err(JobError::new(Fault::PaperOut, escpos::PAPER_OUT)),
-            Some(false) => {}
-            None => remember_silent(key),
+            Some(false) => note_answer(&key, true),
+            None => note_answer(&key, false),
         }
     }
     // A write that fails part way may have left some of the job in the printer.
@@ -204,25 +204,31 @@ fn write_tcp(host: &str, port: u16, bytes: &[u8], check_paper: bool) -> Result<(
     Ok(())
 }
 
-/// Printers that never answered the paper query. Many print servers do not,
-/// and waiting half a second on every receipt for them adds up. Kept until
-/// the app restarts.
-static SILENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Missed paper queries in a row, per printer. Many print servers never
+/// answer, and half a second on every receipt adds up, so after
+/// `SILENT_AFTER` misses the query is skipped until the app restarts. One
+/// miss alone may be a printer still busy with the last job.
+static MISSES: Mutex<Vec<(String, u8)>> = Mutex::new(Vec::new());
+const SILENT_AFTER: u8 = 3;
 
 fn is_silent(key: &str) -> bool {
-    SILENT
+    MISSES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .iter()
-        .any(|silent| silent == key)
+        .any(|(printer, misses)| printer == key && *misses >= SILENT_AFTER)
 }
 
-fn remember_silent(key: String) {
-    let mut silent = SILENT
+fn note_answer(key: &str, answered: bool) {
+    let mut misses = MISSES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !silent.contains(&key) {
-        silent.push(key);
+    misses.retain(|(printer, _)| printer != key || !answered);
+    if !answered {
+        match misses.iter_mut().find(|(printer, _)| printer == key) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => misses.push((key.to_string(), 1)),
+        }
     }
 }
 
@@ -304,13 +310,13 @@ mod tests {
 
     #[test]
     fn a_printer_that_never_answers_is_not_asked_again() {
-        // Asking costs half a second per receipt. After one silent reply
-        // the query is skipped, so the next job goes straight out.
+        // Asking costs half a second per receipt. After three silent replies
+        // in a row the query is skipped, so later jobs go straight out.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let printer = std::thread::spawn(move || {
             let mut jobs = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..4 {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut got = Vec::new();
                 let _ = socket.read_to_end(&mut got);
@@ -318,10 +324,13 @@ mod tests {
             }
             jobs
         });
-        write_tcp("127.0.0.1", port, b"one", true).unwrap();
-        write_tcp("127.0.0.1", port, b"two", true).unwrap();
+        for job in [b"1", b"2", b"3", b"4"] {
+            write_tcp("127.0.0.1", port, job, true).unwrap();
+        }
         let jobs = printer.join().unwrap();
-        assert_eq!(jobs[0], [&escpos::PAPER_STATUS[..], b"one"].concat());
-        assert_eq!(jobs[1], b"two");
+        for (job, sent) in jobs.iter().take(3).zip([b"1", b"2", b"3"]) {
+            assert_eq!(*job, [&escpos::PAPER_STATUS[..], sent].concat());
+        }
+        assert_eq!(jobs[3], b"4");
     }
 }

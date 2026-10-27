@@ -99,7 +99,7 @@ fn decode_png(png: &[u8]) -> Result<DynamicImage, RasterError> {
     // A browser canvas is RGBA at the screen's pixel ratio. A long receipt at
     // 2x is 1024 x 16 000, about 64 MB decoded, so 16 MB rejected real slips.
     // The 1.5 MB body cap already bounds what a caller can send.
-    limits.max_alloc = Some(128 * 1024 * 1024);
+    limits.max_alloc = Some(64 * 1024 * 1024);
     let mut reader = ImageReader::new(Cursor::new(png));
     reader.set_format(ImageFormat::Png);
     reader.limits(limits);

@@ -15,7 +15,7 @@ if [ -z "$version" ]; then
     exit 1
 fi
 
-cargo build --release --manifest-path "$root/Cargo.toml"
+cargo build --release --locked --manifest-path "$root/Cargo.toml"
 
 target_dir=${CARGO_TARGET_DIR:-$root/target}
 binary=$target_dir/release/tapprint

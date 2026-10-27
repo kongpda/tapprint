@@ -21,9 +21,9 @@ use crate::print;
 const MAX_BODY: usize = 1_500_000;
 /// How long a pairing request waits for the cashier to answer.
 const PAIR_WAIT: Duration = Duration::from_secs(120);
-/// Enough that a status check is answered while a slow print is running.
-/// Printer bytes still go out one job at a time.
-const WORKERS: usize = 4;
+/// Enough that a status check is answered while prints queue behind a slow
+/// printer and a pairing request waits. Printer bytes still go out one job at a time.
+const WORKERS: usize = 8;
 
 pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
     let port = shared.snapshot().port;
@@ -56,6 +56,16 @@ fn handle(shared: &Shared, port: u16, mut request: Request) {
             request,
             StatusCode(421),
             error_json("unknown host", "unknown_host"),
+        );
+        return;
+    }
+    // A page's `fetch` always sends `Content-Length`. Chunked framing is
+    // refused outright: tiny_http 0.12 mishandles it (CVE-2026-66752).
+    if header(&request, "transfer-encoding").is_some() {
+        let _ = respond(
+            request,
+            StatusCode(400),
+            error_json("send the body with Content-Length", "bad_request"),
         );
         return;
     }
@@ -106,10 +116,7 @@ fn pair(shared: &Shared, request: &Request) -> (StatusCode, Vec<u8>) {
             ),
         );
     };
-    let client = crate::model::client_label(
-        header(request, "x-till-client").as_deref(),
-        header(request, "user-agent").as_deref(),
-    );
+    let client = caller_label(request);
     match shared.request_pair(&origin, &client, PAIR_WAIT) {
         Ok(code) => {
             note_caller(shared, request);
@@ -150,7 +157,9 @@ fn pair_failure(error: &PairError) -> (u16, String, &'static str) {
         ),
         PairError::Blocked => (
             429,
-            "this site was turned down. Wait 10 minutes before asking again.".to_string(),
+            // Also returned for a short pause after any refusal, so the
+            // cashier is not asked again straight away.
+            "pairing is paused. Try again later.".to_string(),
             "pair_blocked",
         ),
         PairError::Failed(message) => (500, message.clone(), "pair_failed"),
@@ -310,10 +319,15 @@ fn bearer(request: &Request) -> Option<String> {
 }
 
 fn note_caller(shared: &Shared, request: &Request) {
-    shared.note_client(&crate::model::client_label(
+    shared.note_client(&caller_label(request));
+}
+
+/// How the page names itself, or its browser when it does not. Not trusted.
+fn caller_label(request: &Request) -> String {
+    crate::model::client_label(
         header(request, "x-till-client").as_deref(),
         header(request, "user-agent").as_deref(),
-    ));
+    )
 }
 
 /// `127.0.0.1:<port>` or `localhost:<port>`. Anything else came through a name
@@ -361,6 +375,29 @@ fn respond(request: Request, status: StatusCode, body: Vec<u8>) -> Result<(), ()
 mod tests {
     use super::*;
     use crate::model::DEFAULT_PORT;
+
+    #[test]
+    fn a_chunked_request_is_refused_before_it_is_read() {
+        // tiny_http 0.12 lets `Transfer-Encoding` override `Content-Length`
+        // (CVE-2026-66752). No browser needs it, so it never reaches a handler.
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("tapprint-chunked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Shared::load_from(dir.join("config.json"), None).unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            client,
+            "POST /v1/print HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nTransfer-Encoding: chunked\r\nContent-Length: 3\r\n\r\n0\r\n\r\n"
+        )
+        .unwrap();
+        handle(&shared, port, server.recv().unwrap());
+        let mut reply = [0u8; 12];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"HTTP/1.1 400");
+    }
 
     #[test]
     fn only_this_computer_names_are_accepted_as_host() {

@@ -18,7 +18,7 @@ What it defends against:
 
 - **Other computers.** It listens on `127.0.0.1` only.
 - **DNS rebinding.** The `Host` header must be `127.0.0.1` or `localhost`.
-- **Unwanted sites.** A site needs a code bound to its `Origin`, granted by the person at the till in the TapPrint window. Denied origins are blocked for 10 minutes, unanswered ones for 1 minute, and one pairing request waits at a time. Each pairing issues a fresh code and revokes the old one.
+- **Unwanted sites.** A site needs a code bound to its `Origin`, granted by the person at the till in the TapPrint window. Denied origins are blocked for 10 minutes, unanswered ones for 1 minute, and one pairing request waits at a time. After any refusal or timeout, no site can ask for 15 s. This slows a page that keeps asking, but does not stop it. The person at the till should close such a page. Each pairing issues a fresh code and revokes the old one.
 - **Printer reconfiguration.** Raw ESC/POS is off unless the person at the till turns it on.
 - **LAN scanning.** The page cannot choose the printer address.
 - **Timing attacks on codes.** Codes are compared in constant time.
@@ -31,3 +31,11 @@ What it does not defend against:
 - Programs on this computer faking `Origin`. Only browsers set `Origin` honestly. Any local program can send a pairing request in a known site's name, so the person at the till must still decide. The window warns when an already allowed site asks again.
 - A site the person at the till allowed. It can print receipts, and can send raw commands if raw mode is on.
 - Anyone holding the manual pairing code. It works from any origin. Keep it private.
+
+## Known issues in dependencies
+
+Checked with `cargo audit` on 27 October 2026. CI runs it on every push.
+
+- **tiny_http 0.12 request smuggling (CVE-2026-66752).** tiny_http mishandles `Transfer-Encoding: chunked`, and no fixed release exists. TapPrint refuses any request that has a `Transfer-Encoding` header, so the faulty code never runs. Browsers send `Content-Length` for `fetch` bodies.
+- **libusb 1.0.27 denial of service (CVE-2026-47104, CVE-2026-23679).** TapPrint builds libusb from the source bundled in `libusb1-sys` 0.7.0, and that version is 1.0.27. libusb 1.0.30 fixes both issues. To trigger either one, an attacker must plug a malicious USB device into the till, and the worst result is a crash. TapPrint will move to a fixed libusb when `libusb1-sys` ships one.
+- **Unmaintained crates.** `paste`, `ttf-parser`, `zbus_names`, `zvariant`, and `zvariant_derive` have no maintainer. They come in through the gpui UI library, and none has a known vulnerability.

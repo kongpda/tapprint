@@ -201,6 +201,10 @@ mod platform {
             if matches!(ch, '"' | '`' | '$' | '\\') {
                 exec.push('\\');
             }
+            // `%` starts a field code in `Exec`. A literal one is written twice.
+            if ch == '%' {
+                exec.push('%');
+            }
             exec.push(ch);
         }
         let body = format!(

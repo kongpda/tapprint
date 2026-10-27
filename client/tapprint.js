@@ -59,30 +59,49 @@ export class TapPrint {
     this.base = `http://127.0.0.1:${port}`;
     this.storageKey = storageKey;
     this.clientName = clientName;
-    /** @type {string|undefined} */
-    this.manualCode = code;
-    /** @type {string|undefined} */
+    /** A code passed in the options. It belongs to the caller and is never forgotten. */
     this.givenCode = code;
+    /** Used only when localStorage is blocked. @type {string|undefined} */
+    this.memoryCode = undefined;
   }
 
   /** @returns {string|null} */
   _code() {
-    if (this.manualCode) return this.manualCode;
+    if (this.givenCode) return this.givenCode;
+    // Read storage every time: another tab may have paired since.
     try {
-      return globalThis.localStorage?.getItem(this.storageKey) ?? null;
+      const stored = globalThis.localStorage?.getItem(this.storageKey);
+      if (stored) return stored;
     } catch {
-      return null;
+      // Storage is blocked. Fall back to the copy in memory.
     }
+    return this.memoryCode ?? null;
   }
 
   /** @param {string} value */
   _store(value) {
+    this.memoryCode = value;
     try {
       globalThis.localStorage?.setItem(this.storageKey, value);
     } catch {
       // Storage may be blocked. The code then lasts for this object only.
     }
-    this.manualCode = value;
+  }
+
+  /**
+   * Forget `code` after the server rejected it, unless another tab has
+   * already stored a newer one.
+   * @param {string} code
+   */
+  _discard(code) {
+    if (this.memoryCode === code) this.memoryCode = undefined;
+    try {
+      if (globalThis.localStorage?.getItem(this.storageKey) === code) {
+        globalThis.localStorage.removeItem(this.storageKey);
+      }
+    } catch {
+      // Nothing to remove.
+    }
   }
 
   /**
@@ -95,19 +114,19 @@ export class TapPrint {
     const headers = { ...(init.headers || {}) };
     if (this.clientName) headers["X-Till-Client"] = this.clientName;
     const code = sendCode ? this._code() : null;
-    // A code given in the options belongs to the caller. Only a stored one is forgotten.
-    const stored = Boolean(code) && code !== this.givenCode;
     if (code) headers.Authorization = `Bearer ${code}`;
 
     let response;
     try {
       response = await fetch(this.base + path, { ...init, headers });
     } catch (cause) {
-      throw new TapPrintError(
-        "Cannot reach TapPrint. Check that it is running on this computer.",
+      const error = new TapPrintError(
+        "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device.",
         0,
         "unreachable",
       );
+      error.cause = cause;
+      throw error;
     }
     let body;
     try {
@@ -115,8 +134,11 @@ export class TapPrint {
     } catch {
       throw new TapPrintError("TapPrint sent an unreadable reply.", response.status, "bad_response");
     }
+    if (body === null || typeof body !== "object") {
+      throw new TapPrintError("TapPrint sent an unreadable reply.", response.status, "bad_response");
+    }
     if (!response.ok || body.ok === false) {
-      if (response.status === 401 && stored) this.forget();
+      if (response.status === 401 && code && code !== this.givenCode) this._discard(code);
       throw new TapPrintError(
         body.error || `TapPrint returned ${response.status}.`,
         response.status,
@@ -150,9 +172,9 @@ export class TapPrint {
     return Boolean(this._code());
   }
 
-  /** Forget the stored code. */
+  /** Forget the stored code. A code passed in the options is kept. */
   forget() {
-    this.manualCode = undefined;
+    this.memoryCode = undefined;
     try {
       globalThis.localStorage?.removeItem(this.storageKey);
     } catch {
