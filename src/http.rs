@@ -32,12 +32,44 @@ pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
             "Port {port} on this computer is already in use ({error}). TapPrint, or the older Receipt Till, may already be running: look for it in the menu bar or the system tray. Quit it, then open TapPrint again."
         )
     })?;
+    spawn_workers(server, &shared, port, "http")?;
+    // Safari needs HTTPS. Failing here must not stop Chrome and Edge printing.
+    #[cfg(target_os = "macos")]
+    if let Err(error) = serve_secure(&shared, port) {
+        shared.set_status(Tone::Problem, format!("Safari support is off: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn serve_secure(shared: &Arc<Shared>, port: u16) -> Result<(), String> {
+    let secure = crate::tls::secure_port(port).ok_or("no port is free for HTTPS")?;
+    let identity = crate::tls::identity(&crate::model::data_dir())?;
+    let server = Server::https(
+        format!("127.0.0.1:{secure}"),
+        tiny_http::SslConfig {
+            certificate: identity.certificate.clone(),
+            private_key: identity.private_key.clone(),
+        },
+    )
+    .map_err(|error| format!("port {secure} could not be opened ({error})"))?;
+    spawn_workers(server, shared, secure, "https")?;
+    crate::tls::mark_serving(&identity.certificate_path);
+    Ok(())
+}
+
+fn spawn_workers(
+    server: Server,
+    shared: &Arc<Shared>,
+    port: u16,
+    scheme: &str,
+) -> Result<(), String> {
     let server = Arc::new(server);
     for worker in 0..WORKERS {
         let server = Arc::clone(&server);
-        let shared = Arc::clone(&shared);
+        let shared = Arc::clone(shared);
         thread::Builder::new()
-            .name(format!("tapprint-http-{worker}"))
+            .name(format!("tapprint-{scheme}-{worker}"))
             .spawn(move || {
                 while let Ok(request) = server.recv() {
                     // One bad request must not take down a listener. The
@@ -92,6 +124,22 @@ fn handle(shared: &Shared, port: u16, mut request: Request) {
     }
     if method == "POST" && path == "/v1/pair" {
         let (status, body) = pair(shared, &request);
+        let _ = respond(request, status, body);
+        return;
+    }
+    if method == "POST" && path == "/v1/unpair" {
+        let removed = shared.unpair(
+            header(&request, "origin").as_deref(),
+            &bearer(&request).unwrap_or_default(),
+        );
+        let (status, body) = if removed {
+            (
+                StatusCode(200),
+                serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default(),
+            )
+        } else {
+            (StatusCode(401), error_json("not paired", "not_paired"))
+        };
         let _ = respond(request, status, body);
         return;
     }

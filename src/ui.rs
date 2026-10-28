@@ -515,6 +515,59 @@ impl TillView {
         self.pull(cx);
     }
 
+    /// macOS shows its own approval prompt, so this waits off the UI thread.
+    fn set_up_safari(&mut self, cx: &mut Context<Self>) {
+        self.shared
+            .set_status(Tone::Busy, "Waiting for macOS to approve Safari support");
+        cx.spawn(async move |_this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::tls::set_up(&crate::model::data_dir()) })
+                .await;
+            cx.update(|cx| {
+                if let Some(global) = cx.try_global::<AppGlobal>() {
+                    match result {
+                        Ok(()) => global
+                            .shared
+                            .set_status(Tone::Ready, "Safari can now reach TapPrint"),
+                        Err(error) => global.shared.set_status(Tone::Problem, error),
+                    }
+                }
+                sync_window(cx);
+            });
+        })
+        .detach();
+        self.pull(cx);
+    }
+
+    fn safari_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let trusted = crate::tls::is_trusted();
+        let card = card().child(label("SAFARI")).child(div().text_sm().child(if trusted {
+            "Safari support is on"
+        } else {
+            "Safari support is not set up"
+        }));
+        if trusted {
+            return card.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child("Till pages in Safari can print. Chrome and Edge need nothing extra."),
+            );
+        }
+        card.child(
+            div().text_xs().text_color(rgb(MUTED)).child(
+                "Safari blocks plain connections from a secure till page. Allow TapPrint's local certificate once. macOS asks for your approval, and the certificate only covers this computer.",
+            ),
+        )
+        .child(button(
+            "safari-setup",
+            "Set up Safari",
+            true,
+            cx.listener(|view, _: &ClickEvent, _, cx| view.set_up_safari(cx)),
+        ))
+    }
+
     fn set_autostart(&mut self, on: bool, cx: &mut Context<Self>) {
         match crate::autostart::set(on) {
             Ok(()) => {
@@ -647,6 +700,9 @@ impl Render for TillView {
                     .child(self.activity_card(&snapshot));
             }
             Page::Settings => {
+                if crate::tls::serving() {
+                    content = content.child(self.safari_card(cx));
+                }
                 content = content.child(self.startup_card(cx)).child(self.code_card(cx, &snapshot)).child(self.raw_card(cx, &snapshot))
                     .child(card().child(label("ABOUT"))
                         .child(div().text_xs().text_color(rgb(MUTED)).child(format!("TapPrint {} · 127.0.0.1:{}", env!("CARGO_PKG_VERSION"), snapshot.port)))

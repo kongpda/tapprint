@@ -93,7 +93,7 @@ Start TapPrint with the computer by turning on **Start with this computer** in t
 
 TapPrint listens on `127.0.0.1` and the saved port (9240 by default). If the port is taken, it stops. It will not sit on the next port and catch the till page.
 
-The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Use Chrome or Edge. Safari may block an HTTPS page from calling the loopback address.
+The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Chrome and Edge use plain HTTP. Safari blocks an HTTPS page from calling plain HTTP, so on macOS TapPrint also serves the same API over HTTPS on `127.0.0.1:<port + 1>` (9241). Open Settings, choose Set up Safari, and approve the macOS prompt once. The certificate is self-signed, covers only `127.0.0.1`, `localhost` and `::1`, and its key stays in the settings folder.
 
 Chrome 142 and later ask once per site before a page can reach apps on this computer (Local Network Access). Chrome 145 and later call this permission "Apps on device". The person at the till must click **Allow**. If they block it, the client reports `unreachable`. Reset it in the site settings (the icon left of the address). A cross-origin till page inside an iframe needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
 
@@ -149,6 +149,10 @@ Each pairing issues a fresh code. If the origin was already allowed, its old cod
 - `403` `pair_denied`, `408` `pair_timeout`, `409` `pair_busy`, `429` `pair_blocked`.
 
 Allowed sites are listed in the window and can be removed there.
+
+### `POST /v1/unpair`
+
+A site removes its own pairing. Send the site's code as `Authorization: Bearer <code>` from that origin. Returns `{"ok":true}`, or `401` `not_paired` for any other code or origin. The window's own pairing code cannot be removed this way.
 
 ### `POST /v1/print`
 

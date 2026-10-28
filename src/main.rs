@@ -12,6 +12,7 @@ mod model;
 mod notice;
 mod print;
 mod raster;
+mod tls;
 mod ui;
 mod usb;
 
