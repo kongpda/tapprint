@@ -12,7 +12,7 @@ categories = ["hardware-support", "gui"]
 publish = false
 
 [dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 gpui-ce = "0.3"
 gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
 gpui_ce_elements = "0.3"
@@ -29,7 +29,7 @@ tiny_http = "0.12"
 # Local HTTPS for Safari. tiny_http's own rustls is too old (known advisories),
 # so TapPrint terminates TLS itself and forwards to the plain listener.
 [target.'cfg(target_os = "macos")'.dependencies]
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(windows)'.dependencies]
