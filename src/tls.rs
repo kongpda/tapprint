@@ -75,7 +75,8 @@ pub fn identity(folder: &Path) -> Result<Identity, String> {
         });
     }
     let (certificate, private_key) = generate()?;
-    fs::create_dir_all(folder).map_err(|error| format!("could not create {}: {error}", folder.display()))?;
+    fs::create_dir_all(folder)
+        .map_err(|error| format!("could not create {}: {error}", folder.display()))?;
     write_private(&key_path, private_key.as_bytes())?;
     fs::write(&certificate_path, certificate.as_bytes())
         .map_err(|error| format!("could not save the certificate: {error}"))?;
@@ -138,7 +139,6 @@ fn civil(seconds: u64) -> (i32, u8, u8) {
     (year, month, day)
 }
 
-#[cfg(unix)]
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -153,13 +153,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("could not save the key: {error}"))
 }
 
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    fs::write(path, bytes).map_err(|error| format!("could not save the key: {error}"))
-}
-
 /// Does macOS already trust the certificate for 127.0.0.1?
-#[cfg(target_os = "macos")]
 pub fn trusted(certificate: &Path) -> bool {
     Command::new("security")
         .args(["verify-cert", "-p", "ssl", "-s", "127.0.0.1", "-c"])
@@ -170,7 +164,6 @@ pub fn trusted(certificate: &Path) -> bool {
 
 /// Ask macOS to trust the certificate for this user. macOS shows its own
 /// approval prompt, so this returns only after the user answers it.
-#[cfg(target_os = "macos")]
 pub fn trust(certificate: &Path) -> Result<(), String> {
     let keychain = crate::model::home_dir()
         .join("Library")
@@ -192,16 +185,6 @@ pub fn trust(certificate: &Path) -> Result<(), String> {
     } else {
         format!("macOS did not approve the certificate: {detail}")
     })
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn trusted(_certificate: &Path) -> bool {
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn trust(_certificate: &Path) -> Result<(), String> {
-    Err("Safari setup is only needed on macOS.".to_string())
 }
 
 #[cfg(test)]

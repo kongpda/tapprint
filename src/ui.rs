@@ -516,6 +516,7 @@ impl TillView {
     }
 
     /// macOS shows its own approval prompt, so this waits off the UI thread.
+    #[cfg(target_os = "macos")]
     fn set_up_safari(&mut self, cx: &mut Context<Self>) {
         self.shared
             .set_status(Tone::Busy, "Waiting for macOS to approve Safari support");
@@ -540,13 +541,16 @@ impl TillView {
         self.pull(cx);
     }
 
+    #[cfg(target_os = "macos")]
     fn safari_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let trusted = crate::tls::is_trusted();
-        let card = card().child(label("SAFARI")).child(div().text_sm().child(if trusted {
-            "Safari support is on"
-        } else {
-            "Safari support is not set up"
-        }));
+        let card = card()
+            .child(label("SAFARI"))
+            .child(div().text_sm().child(if trusted {
+                "Safari support is on"
+            } else {
+                "Safari support is not set up"
+            }));
         if trusted {
             return card.child(
                 div()
@@ -700,6 +704,7 @@ impl Render for TillView {
                     .child(self.activity_card(&snapshot));
             }
             Page::Settings => {
+                #[cfg(target_os = "macos")]
                 if crate::tls::serving() {
                     content = content.child(self.safari_card(cx));
                 }
@@ -1056,7 +1061,12 @@ impl TillView {
         )
     }
 
-    fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot, transport: &str) -> gpui::Div {
+    fn printer_card(
+        &self,
+        cx: &mut Context<Self>,
+        snapshot: &crate::model::Snapshot,
+        transport: &str,
+    ) -> gpui::Div {
         let mut list = div().flex().flex_col().gap_2();
         if snapshot.printers.is_empty() {
             let message = if snapshot.listed {
