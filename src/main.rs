@@ -12,6 +12,8 @@ mod model;
 mod notice;
 mod print;
 mod raster;
+#[cfg(target_os = "macos")]
+mod tls;
 mod ui;
 mod usb;
 

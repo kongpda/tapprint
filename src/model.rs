@@ -666,6 +666,24 @@ impl Shared {
         self.pair_answered.notify_all();
     }
 
+    /// A site gives up its own code. The code must be that site's: a page
+    /// cannot remove another site, and the window's own code is not a site's.
+    pub fn unpair(&self, origin: Option<&str>, offered: &str) -> bool {
+        let Some(origin) = origin.and_then(normalized_origin) else {
+            return false;
+        };
+        let owns = self
+            .lock()
+            .config
+            .sites
+            .iter()
+            .any(|site| site.origin == origin && codes_match(&site.code, offered));
+        if owns {
+            self.remove_site(&origin);
+        }
+        owns
+    }
+
     /// The site's code stops working at once.
     pub fn remove_site(&self, origin: &str) {
         {
@@ -941,6 +959,14 @@ fn config_path() -> PathBuf {
     config_root().join(folder).join("config.json")
 }
 
+/// The folder holding the settings file and the local certificate.
+#[cfg(target_os = "macos")]
+pub fn data_dir() -> PathBuf {
+    let mut path = config_path();
+    path.pop();
+    path
+}
+
 /// Where the app kept its settings when it was called Receipt Till.
 fn legacy_config_path() -> PathBuf {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1025,7 +1051,7 @@ pub fn ago_words(elapsed: Duration) -> String {
     }
 }
 
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -1202,6 +1228,24 @@ mod tests {
         let _ = shared.request_pair("https://shop.example", "x", Duration::from_secs(30));
         let left = watcher.join().unwrap();
         assert!((25..=30).contains(&left), "{left}");
+    }
+
+    #[test]
+    fn a_site_can_drop_only_its_own_pairing() {
+        let path = isolated("unpair");
+        let shared = std::sync::Arc::new(Shared::load_from(path, None).unwrap());
+        let cashier = answer_when_asked(&shared, true);
+        let code = shared
+            .request_pair("https://shop.example", "Shop", Duration::from_secs(5))
+            .unwrap();
+        cashier.join().unwrap();
+        // Another site holding the code, or no origin, cannot revoke it.
+        assert!(!shared.unpair(Some("https://evil.example"), &code));
+        assert!(!shared.unpair(None, &code));
+        assert!(shared.authorize(Some("https://shop.example"), &code));
+        assert!(shared.unpair(Some("https://shop.example"), &code));
+        assert!(!shared.authorize(Some("https://shop.example"), &code));
+        assert!(shared.snapshot().sites.is_empty());
     }
 
     #[test]

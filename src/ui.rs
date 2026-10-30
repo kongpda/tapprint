@@ -37,17 +37,21 @@ actions!(
     ]
 );
 
-const PAPER: u32 = 0xf3f0e8;
-const INK: u32 = 0x1c1915;
-const MUTED: u32 = 0x6e675e;
-const CARD: u32 = 0xfffcf7;
-const SOFT: u32 = 0xe7e1d4;
-const READY_BG: u32 = 0xe3efe4;
-const READY_FG: u32 = 0x1d4a2c;
-const BUSY_BG: u32 = 0xf4e7c8;
-const BUSY_FG: u32 = 0x6b4d14;
-const BAD_BG: u32 = 0xf6e3de;
-const BAD_FG: u32 = 0x7a2d22;
+const PAPER: u32 = 0xf5f6f8;
+const INK: u32 = 0x17212b;
+const MUTED: u32 = 0x657180;
+const CARD: u32 = 0xffffff;
+const SOFT: u32 = 0xe5e9ee;
+const READY_BG: u32 = 0xe8f4ef;
+const READY_FG: u32 = 0x17674d;
+const BUSY_BG: u32 = 0xfff4db;
+const BUSY_FG: u32 = 0x775b18;
+const BAD_BG: u32 = 0xfceeed;
+const BAD_FG: u32 = 0x9d3833;
+
+// Embedded vector icons keep the local bundle self-contained.
+const EYE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
+const EYE_OFF: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3 4M6 6.5A19 19 0 0 0 2 12s3.5 7 10 7a13 13 0 0 0 5.5-1.5M10 10a3 3 0 0 0 4 4"/></svg>"#;
 
 struct AppGlobal {
     shared: Arc<Shared>,
@@ -274,7 +278,7 @@ fn open_window(_: &OpenWindow, cx: &mut App) {
     else {
         return;
     };
-    let bounds = Bounds::centered(None, size(px(440.), px(760.)), cx);
+    let bounds = Bounds::centered(None, size(px(480.), px(660.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -283,7 +287,7 @@ fn open_window(_: &OpenWindow, cx: &mut App) {
             traffic_light_position: None,
         }),
         is_resizable: true,
-        window_min_size: Some(size(px(400.), px(640.))),
+        window_min_size: Some(size(px(420.), px(520.))),
         ..Default::default()
     };
     let opened = cx.open_window(options, |_window, cx| {
@@ -431,7 +435,16 @@ fn tray_icon(alert: bool) -> gpui_tray::Result<Icon> {
     builder.build()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Printer,
+    Websites,
+    Settings,
+}
+
 struct TillView {
+    page: Page,
+    show_code: bool,
     shared: Arc<Shared>,
     snapshot: crate::model::Snapshot,
     host: Entity<EditableTextState>,
@@ -459,6 +472,8 @@ impl TillView {
             cx.subscribe(&port, |_, _, _: &TextChanged, cx| cx.notify()),
         ];
         Self {
+            page: Page::Printer,
+            show_code: false,
             shared,
             snapshot,
             host,
@@ -498,6 +513,63 @@ impl TillView {
             self.shared.set_status(Tone::Problem, error);
         }
         self.pull(cx);
+    }
+
+    /// macOS shows its own approval prompt, so this waits off the UI thread.
+    #[cfg(target_os = "macos")]
+    fn set_up_safari(&mut self, cx: &mut Context<Self>) {
+        self.shared
+            .set_status(Tone::Busy, "Waiting for macOS to approve Safari support");
+        cx.spawn(async move |_this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::tls::set_up(&crate::model::data_dir()) })
+                .await;
+            cx.update(|cx| {
+                if let Some(global) = cx.try_global::<AppGlobal>() {
+                    match result {
+                        Ok(()) => global
+                            .shared
+                            .set_status(Tone::Ready, "Safari can now reach TapPrint"),
+                        Err(error) => global.shared.set_status(Tone::Problem, error),
+                    }
+                }
+                sync_window(cx);
+            });
+        })
+        .detach();
+        self.pull(cx);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn safari_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let trusted = crate::tls::is_trusted();
+        let card = card()
+            .child(label("SAFARI"))
+            .child(div().text_sm().child(if trusted {
+                "Safari support is on"
+            } else {
+                "Safari support is not set up"
+            }));
+        if trusted {
+            return card.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child("Till pages in Safari can print. Chrome and Edge need nothing extra."),
+            );
+        }
+        card.child(
+            div().text_xs().text_color(rgb(MUTED)).child(
+                "Safari blocks plain connections from a secure till page. Allow TapPrint's local certificate once. macOS asks for your approval, and the certificate only covers this computer.",
+            ),
+        )
+        .child(button(
+            "safari-setup",
+            "Set up Safari",
+            true,
+            cx.listener(|view, _: &ClickEvent, _, cx| view.set_up_safari(cx)),
+        ))
     }
 
     fn set_autostart(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -549,12 +621,118 @@ impl Render for TillView {
             Tone::Busy => (BUSY_BG, BUSY_FG),
             Tone::Problem => (BAD_BG, BAD_FG),
         };
+        let transport = match snapshot.transport {
+            Transport::Usb => "USB",
+            Transport::Tcp => "Network",
+        };
         let saved_host = if snapshot.tcp_host.is_empty() {
             "No network printer saved".to_string()
         } else {
             format!("Saved {}:{}", snapshot.tcp_host, snapshot.tcp_port)
         };
 
+        let mut content = div().flex().flex_col().gap_3();
+        match self.page {
+            Page::Printer => {
+                let no_printer =
+                    snapshot.transport == Transport::Usb && snapshot.printers.is_empty();
+                content = content.child(
+                    card()
+                        .child(label("PRINTER"))
+                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
+                            if no_printer {
+                                "Connect your printer".to_string()
+                            } else {
+                                snapshot.status.clone()
+                            },
+                        ))
+                        .child(div().text_xs().text_color(rgb(MUTED)).child(if no_printer {
+                            "Plug in a USB receipt printer, or choose Network below.".to_string()
+                        } else {
+                            format!(
+                                "{transport} connection · {} mm paper",
+                                snapshot.paper.millimetres()
+                            )
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(choice(
+                                    "transport-usb",
+                                    "USB",
+                                    snapshot.transport == Transport::Usb,
+                                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                                        if view.shared.set_transport(Transport::Usb).is_ok() {
+                                            view.shared.set_status(Tone::Ready, "Using USB");
+                                        }
+                                        view.pull(cx);
+                                    }),
+                                ))
+                                .child(choice(
+                                    "transport-network",
+                                    "Network",
+                                    snapshot.transport == Transport::Tcp,
+                                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                                        if let Err(error) = view.shared.use_saved_network() {
+                                            view.shared.set_status(Tone::Problem, error);
+                                        }
+                                        view.pull(cx);
+                                    }),
+                                )),
+                        ),
+                );
+                content = match snapshot.transport {
+                    Transport::Usb => content.child(self.printer_card(cx, &snapshot, transport)),
+                    Transport::Tcp => content.child(self.network_card(cx, &saved_host)),
+                };
+                content = content
+                    .child(self.paper_card(cx, &snapshot))
+                    .child(self.job_buttons(cx))
+                    .child(
+                        div().text_xs().text_color(rgb(MUTED)).child(
+                            snapshot
+                                .last_job
+                                .clone()
+                                .unwrap_or_else(|| "No receipts printed this session.".to_string()),
+                        ),
+                    );
+            }
+            Page::Websites => {
+                content = content
+                    .child(self.sites_card(cx, &snapshot))
+                    .child(self.activity_card(&snapshot));
+            }
+            Page::Settings => {
+                #[cfg(target_os = "macos")]
+                if crate::tls::serving() {
+                    content = content.child(self.safari_card(cx));
+                }
+                content = content.child(self.startup_card(cx)).child(self.code_card(cx, &snapshot)).child(self.raw_card(cx, &snapshot))
+                    .child(card().child(label("ABOUT"))
+                        .child(div().text_xs().text_color(rgb(MUTED)).child(format!("TapPrint {} · 127.0.0.1:{}", env!("CARGO_PKG_VERSION"), snapshot.port)))
+                        .child(div().text_xs().text_color(rgb(MUTED)).child("USB printers must use Printer Class. Remove a conflicting system print queue, then reconnect the printer."))
+                        .child(div().text_xs().text_color(rgb(MUTED)).child(format!("Settings: {}", snapshot.config_path))));
+            }
+        }
+        let mut tabs = div().flex().gap_2().px_4().pb_3();
+        for (id, title, page) in [
+            ("tab-printer", "Printer", Page::Printer),
+            ("tab-websites", "Websites", Page::Websites),
+            ("tab-settings", "Settings", Page::Settings),
+        ] {
+            tabs = tabs.child(choice(
+                id,
+                title,
+                self.page == page,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.page = page;
+                    view.show_code = false;
+                    view.confirm_rotate = false;
+                    cx.notify();
+                }),
+            ));
+        }
         div()
             .size_full()
             .flex()
@@ -563,31 +741,29 @@ impl Render for TillView {
             .text_color(rgb(INK))
             .child(header(&snapshot, pill_bg, pill_fg))
             .children(self.pair_card(cx, &snapshot))
+            .child(tabs)
             .child(
                 div()
+                    .id("settings")
                     .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .px_4()
                     .pb_4()
-                    .id("settings")
-                    .overflow_y_scroll()
-                    .child(self.activity_card(&snapshot))
-                    .child(self.sites_card(cx, &snapshot))
-                    .child(self.code_card(cx, &snapshot))
-                    .child(self.paper_card(cx, &snapshot))
-                    .child(self.printer_card(cx, &snapshot))
-                    .child(self.network_card(cx, &saved_host))
-                    .child(self.job_buttons(cx))
-                    .child(self.startup_card(cx))
-                    .child(self.raw_card(cx, &snapshot))
-                    .child(
-                        hint("The printer's USB port must be in Printer Class. If the system already has a queue for it, remove that queue and plug it in again.")
-                            .child(
-                                div().mt_1().child(format!("Settings file {}", snapshot.config_path)),
-                            ),
-                    ),
+                    .child(content),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .px_4()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(rgb(SOFT))
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child("Only this computer")
+                    .child(format!("{} receipts this session", snapshot.jobs)),
             )
     }
 }
@@ -660,7 +836,7 @@ impl TillView {
                 div()
                     .text_sm()
                     .text_color(rgb(MUTED))
-                    .child("No site yet. A till page asks once, and you allow it here."),
+                    .child("No websites paired yet. Choose Connect in your till page, then approve its request here."),
             );
         }
         for origin in &snapshot.sites {
@@ -694,7 +870,7 @@ impl TillView {
                     )),
             );
         }
-        let mut card = card().child(label("Allowed sites")).child(list);
+        let mut card = card().child(label("ALLOWED WEBSITES")).child(list);
         if self.confirm_remove.is_some() {
             card = card.child(hint(
                 "The site stops printing until it asks again and you allow it.",
@@ -705,21 +881,14 @@ impl TillView {
 
     fn raw_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         card()
-            .child(label("Allow raw printer commands"))
-            .child(hint(
-                "Lets paired pages send ESC/POS bytes as they are. Leave this off unless your till software needs it: raw commands can change printer settings.",
-            ))
-            .child(on_off(
-                ("raw-on", "raw-off"),
-                snapshot.allow_raw,
-                cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.shared.set_allow_raw(true);
-                    view.pull(cx);
-                }),
-                cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.shared.set_allow_raw(false);
-                    view.pull(cx);
-                }),
+            .child(div().flex().items_center().justify_between().gap_2()
+                .child(label("Raw printer commands"))
+                .child(toggle("raw-toggle", "Allow raw printer commands", snapshot.allow_raw,
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.shared.set_allow_raw(!view.snapshot.allow_raw); view.pull(cx);
+                    }))))
+            .child(div().text_xs().text_color(rgb(MUTED)).child(
+                "Off is recommended. Raw ESC/POS commands can change printer settings. Enable only if your till requires them.",
             ))
     }
 
@@ -752,8 +921,13 @@ impl TillView {
             .unwrap_or_else(|| "No print yet".to_string());
         let jobs = if snapshot.jobs == 1 { "job" } else { "jobs" };
         card()
-            .child(label("Connected"))
-            .child(hint("Till pages open on this computer."))
+            .child(label("RECENT ACTIVITY"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child("Till pages open on this computer."),
+            )
             .child(rows)
             .child(hint(format!("Last job: {last}")))
             .child(hint(format!(
@@ -773,20 +947,73 @@ impl TillView {
         } else {
             (
                 "New code",
-                "For scripts, servers, and pages that cannot ask. Click the code to copy it.",
+                "Keep this code private. Use Copy code for manual integrations.",
             )
         };
         card()
-            .child(label("Manual pairing code"))
+            .child(label("MANUAL PAIRING"))
+            .child(
+                div().text_xs().text_color(rgb(MUTED)).child(
+                    "Websites connect with Allow. Use this code only for manual integrations.",
+                ),
+            )
             .child(
                 div()
-                    .id("pairing-code")
-                    .on_click(cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)))
-                    .cursor_pointer()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .line_height(px(28.))
-                    .child(grouped_code(&snapshot.pairing_code)),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(SOFT))
+                    .bg(rgb(PAPER))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .line_height(px(22.))
+                            .child(if self.show_code {
+                                grouped_code(&snapshot.pairing_code)
+                            } else {
+                                "•••• •••• •••• ••••".to_string()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("reveal-code")
+                            .role(gpui::Role::Button)
+                            .aria_label(if self.show_code {
+                                "Hide pairing code"
+                            } else {
+                                "Show pairing code"
+                            })
+                            .focusable()
+                            .tab_index(0)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(36.))
+                            .h(px(36.))
+                            .rounded_md()
+                            .border_1()
+                            .border_color(rgb(PAPER))
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(SOFT)))
+                            .focus_visible(|style| style.border_color(rgb(READY_FG)))
+                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                                view.show_code = !view.show_code;
+                                cx.notify();
+                            }))
+                            .child(
+                                gpui::svg()
+                                    .data(if self.show_code { EYE_OFF } else { EYE })
+                                    .w(px(18.))
+                                    .h(px(18.))
+                                    .text_color(rgb(MUTED)),
+                            ),
+                    ),
             )
             .child(hint(rotate_hint))
             .child(
@@ -834,7 +1061,12 @@ impl TillView {
         )
     }
 
-    fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
+    fn printer_card(
+        &self,
+        cx: &mut Context<Self>,
+        snapshot: &crate::model::Snapshot,
+        transport: &str,
+    ) -> gpui::Div {
         let mut list = div().flex().flex_col().gap_2();
         if snapshot.printers.is_empty() {
             let message = if snapshot.listed {
@@ -864,37 +1096,11 @@ impl TillView {
                 ));
             }
         }
-        let usb = snapshot.transport == Transport::Usb;
         card()
-            .child(label("Send receipts by"))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(choice(
-                        "transport-usb",
-                        "USB",
-                        usb,
-                        cx.listener(|view, _: &ClickEvent, _, cx| {
-                            if view.shared.set_transport(Transport::Usb).is_ok() {
-                                view.shared.set_status(Tone::Ready, "Using USB");
-                            }
-                            view.pull(cx);
-                        }),
-                    ))
-                    .child(choice(
-                        "transport-network",
-                        "Network",
-                        !usb,
-                        cx.listener(|view, _: &ClickEvent, _, cx| {
-                            if let Err(error) = view.shared.use_saved_network() {
-                                view.shared.set_status(Tone::Problem, error);
-                            }
-                            view.pull(cx);
-                        }),
-                    )),
-            )
             .child(label("USB printer"))
+            .child(div().text_sm().child(format!(
+                "{transport} devices · selected automatically when only one is available"
+            )))
             .child(list)
     }
 
@@ -954,16 +1160,28 @@ impl TillView {
 
     fn startup_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         card()
-            .child(label("Start with this computer"))
-            .child(hint(
-                "Turn this on for the till, so receipts print after a restart without opening the app.",
-            ))
-            .child(on_off(
-                ("autostart-on", "autostart-off"),
-                self.autostart,
-                cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(true, cx)),
-                cx.listener(|view, _: &ClickEvent, _, cx| view.set_autostart(false, cx)),
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(label("Start at login"))
+                    .child(toggle(
+                        "autostart-toggle",
+                        "Start TapPrint at login",
+                        self.autostart,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.set_autostart(!view.autostart, cx)
+                        }),
+                    )),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child("Keep this till ready to print after a restart."),
+            )
     }
 
     fn job_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -999,24 +1217,44 @@ fn header(snapshot: &crate::model::Snapshot, pill_bg: u32, pill_fg: u32) -> gpui
         .pb_3()
         .child(
             div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("TapPrint"),
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("TapPrint"),
+                )
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .bg(rgb(READY_BG))
+                        .text_color(rgb(READY_FG))
+                        .text_xs()
+                        .child("Running locally"),
+                ),
         )
         .child(
             div()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .bg(rgb(pill_bg))
-                .text_color(rgb(pill_fg))
-                .text_sm()
-                .child(snapshot.status.clone()),
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child("Your receipt printer, connected to your till."),
         )
-        .child(hint(format!(
-            "127.0.0.1:{}  ·  only this computer",
-            snapshot.port
-        )))
+        .when(snapshot.tone != Tone::Ready, |view| {
+            view.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(rgb(pill_bg))
+                    .text_color(rgb(pill_fg))
+                    .text_xs()
+                    .child(snapshot.status.clone()),
+            )
+        })
 }
 
 fn card() -> gpui::Div {
@@ -1025,7 +1263,9 @@ fn card() -> gpui::Div {
         .flex_col()
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded_lg()
+        .border_1()
+        .border_color(rgb(SOFT))
         .bg(rgb(CARD))
 }
 
@@ -1042,20 +1282,6 @@ fn hint(text: impl Into<SharedString>) -> gpui::Div {
     div().text_xs().text_color(rgb(MUTED)).child(text.into())
 }
 
-/// An On / Off pair. The current setting is the dark one.
-fn on_off(
-    (on_id, off_id): (&'static str, &'static str),
-    on: bool,
-    turn_on: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    turn_off: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui::Div {
-    div()
-        .flex()
-        .gap_2()
-        .child(choice(on_id, "On", on, turn_on))
-        .child(choice(off_id, "Off", !on, turn_off))
-}
-
 fn grouped_code(code: &str) -> String {
     let mut grouped = String::with_capacity(code.len().saturating_add(code.len() / 4));
     for (index, ch) in code.chars().enumerate() {
@@ -1067,26 +1293,83 @@ fn grouped_code(code: &str) -> String {
     grouped
 }
 
+fn button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    primary: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let label: SharedString = label.into();
+    let (background, foreground) = if primary { (INK, CARD) } else { (CARD, INK) };
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label.clone())
+        .focusable()
+        .tab_index(0)
+        .on_click(on_click)
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(if primary { INK } else { SOFT }))
+        .bg(rgb(background))
+        .text_color(rgb(foreground))
+        .text_sm()
+        .cursor_pointer()
+        .hover(move |style| style.bg(rgb(if primary { MUTED } else { PAPER })))
+        .active(|style| style.bg(rgb(MUTED)).text_color(rgb(CARD)))
+        .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        .child(label)
+}
+
 fn choice(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    let (background, foreground) = if selected {
-        (rgb(INK), rgb(CARD))
-    } else {
-        (rgb(SOFT), rgb(INK))
-    };
+    button(id, label, selected, on_click)
+}
+
+fn toggle(
+    id: &'static str,
+    label: &'static str,
+    on: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(gpui::Role::Switch)
+        .aria_label(label)
+        .aria_toggled(if on {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
+        .focusable()
+        .tab_index(0)
         .on_click(on_click)
-        .px_3()
-        .py_2()
-        .rounded_md()
-        .bg(background)
-        .text_color(foreground)
-        .text_sm()
+        .h(px(44.))
+        .px_1()
+        .flex()
+        .items_center()
         .cursor_pointer()
-        .child(label.into())
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(CARD))
+        .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        .hover(|style| style.bg(rgb(PAPER)))
+        .child(
+            div()
+                .w(px(44.))
+                .h(px(26.))
+                .p(px(3.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .bg(rgb(if on { READY_FG } else { MUTED }))
+                .when(on, |track| track.justify_end())
+                .child(div().w(px(20.)).h(px(20.)).rounded_full().bg(rgb(CARD))),
+        )
 }

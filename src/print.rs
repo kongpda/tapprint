@@ -341,13 +341,21 @@ mod tests {
         // in a row the query is skipped, so later jobs go straight out.
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        // Other tests may have used this port number before, and the miss
+        // count is kept per address for the life of the process.
+        note_answer(&format!("127.0.0.1:{port}"), true);
         let printer = std::thread::spawn(move || {
             let mut jobs = Vec::new();
-            for _ in 0..4 {
+            // Other programs on the machine sometimes probe a free local port
+            // with an HTTP or TLS hello. Ours are at most a status query and
+            // one byte.
+            while jobs.len() < 4 {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut got = Vec::new();
                 let _ = socket.read_to_end(&mut got);
-                jobs.push(got);
+                if !got.is_empty() && got.len() <= 5 {
+                    jobs.push(got);
+                }
             }
             jobs
         });

@@ -6,7 +6,9 @@
 # steps in the README.
 set -eu
 
-root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+[ "$(uname -s)" = Darwin ] || { echo "tapprint: macOS is required" >&2; exit 1; }
+
+root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 cd "$root"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
@@ -70,6 +72,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 
 # Local launch only. Developer ID replaces this before the app leaves the machine.
+plutil -lint "$app/Contents/Info.plist"
 codesign --force --sign - "$app" >/dev/null
+codesign --verify "$app"
 
 echo "$app"

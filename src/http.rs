@@ -32,12 +32,37 @@ pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
             "Port {port} on this computer is already in use ({error}). TapPrint, or the older Receipt Till, may already be running: look for it in the menu bar or the system tray. Quit it, then open TapPrint again."
         )
     })?;
+    spawn_workers(server, &shared, port, "http")?;
+    // Safari needs HTTPS. Failing here must not stop Chrome and Edge printing.
+    #[cfg(target_os = "macos")]
+    if let Err(error) = serve_secure(port) {
+        shared.set_status(Tone::Problem, format!("Safari support is off: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn serve_secure(port: u16) -> Result<(), String> {
+    let secure = crate::tls::secure_port(port).ok_or("no port is free for HTTPS")?;
+    let identity = crate::tls::identity(&crate::model::data_dir())?;
+    crate::tls::forward(secure, port, &identity)
+        .map_err(|error| format!("port {secure} could not be opened ({error})"))?;
+    crate::tls::mark_serving(&identity.certificate_path);
+    Ok(())
+}
+
+fn spawn_workers(
+    server: Server,
+    shared: &Arc<Shared>,
+    port: u16,
+    scheme: &str,
+) -> Result<(), String> {
     let server = Arc::new(server);
     for worker in 0..WORKERS {
         let server = Arc::clone(&server);
-        let shared = Arc::clone(&shared);
+        let shared = Arc::clone(shared);
         thread::Builder::new()
-            .name(format!("tapprint-http-{worker}"))
+            .name(format!("tapprint-{scheme}-{worker}"))
             .spawn(move || {
                 while let Ok(request) = server.recv() {
                     // One bad request must not take down a listener. The
@@ -92,6 +117,22 @@ fn handle(shared: &Shared, port: u16, mut request: Request) {
     }
     if method == "POST" && path == "/v1/pair" {
         let (status, body) = pair(shared, &request);
+        let _ = respond(request, status, body);
+        return;
+    }
+    if method == "POST" && path == "/v1/unpair" {
+        let removed = shared.unpair(
+            header(&request, "origin").as_deref(),
+            &bearer(&request).unwrap_or_default(),
+        );
+        let (status, body) = if removed {
+            (
+                StatusCode(200),
+                serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap_or_default(),
+            )
+        } else {
+            (StatusCode(401), error_json("not paired", "not_paired"))
+        };
         let _ = respond(request, status, body);
         return;
     }
@@ -336,8 +377,13 @@ fn local_host(host: Option<&str>, port: u16) -> bool {
     let Some((name, given)) = host.and_then(|host| host.rsplit_once(':')) else {
         return false;
     };
-    given.parse::<u16>().ok() == Some(port)
-        && (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
+    let given = given.parse::<u16>().ok();
+    // On a Mac the HTTPS front forwards here with its own port in `Host`.
+    #[cfg(target_os = "macos")]
+    let is_ours = given == Some(port) || given == crate::tls::secure_port(port);
+    #[cfg(not(target_os = "macos"))]
+    let is_ours = given == Some(port);
+    is_ours && (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
 }
 
 fn header(request: &Request, name: &str) -> Option<String> {
@@ -403,7 +449,7 @@ mod tests {
     fn only_this_computer_names_are_accepted_as_host() {
         assert!(local_host(Some("127.0.0.1:9240"), 9240));
         assert!(local_host(Some("localhost:9240"), 9240));
-        assert!(!local_host(Some("127.0.0.1:9241"), 9240));
+        assert!(!local_host(Some("127.0.0.1:9999"), 9240));
         // A rebound domain still carries its own name in the Host header.
         assert!(!local_host(Some("evil.example:9240"), 9240));
         assert!(!local_host(Some("127.0.0.1"), 9240));
