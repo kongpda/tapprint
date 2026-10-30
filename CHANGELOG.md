@@ -24,3 +24,5 @@ First public release.
 - Failed jobs no longer count as printed. A printer name that does not resolve within 5 s fails the job instead of holding up the printer.
 - A second copy of the app no longer rewrites the settings file before it finds the port taken.
 - The client reads the stored code on every call, so a code paired in another tab is used and is not wiped by an old one.
+- Safari support on macOS: TapPrint also answers on `https://127.0.0.1:9241` with its own loopback-only certificate. Settings > Set up Safari asks macOS to trust it. Chrome and Edge keep using plain HTTP. The HTTPS front uses rustls 0.23.
+- `POST /v1/unpair` lets a site drop its own pairing. The browser client has `disconnectTapPrint`.
