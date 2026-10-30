@@ -21,7 +21,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Tag matches Cargo.toml
@@ -36,7 +36,7 @@ jobs:
     needs: check
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -85,7 +85,7 @@ jobs:
           PLIST
           codesign --force --sign - "$app"
           ditto -c -k --keepParent "$app" dist/TapPrint-macos-universal.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos
           path: dist/TapPrint-macos-universal.zip
@@ -94,7 +94,7 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -105,7 +105,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target\release\tapprint.exe,LICENSE,README.md -DestinationPath dist\TapPrint-windows-x86_64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows
           path: dist/TapPrint-windows-x86_64.zip
@@ -115,7 +115,7 @@ jobs:
     # The oldest supported runner, so the binary runs on older glibc too.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -133,7 +133,7 @@ jobs:
           mkdir -p dist/tapprint-linux-x86_64
           cp target/release/tapprint LICENSE README.md dist/tapprint-linux-x86_64/
           tar -C dist -czf dist/TapPrint-linux-x86_64.tar.gz tapprint-linux-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux
           path: dist/TapPrint-linux-x86_64.tar.gz
@@ -144,14 +144,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
       - name: Checksums
         working-directory: artifacts
         run: sha256sum * > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
           generate_release_notes: true
