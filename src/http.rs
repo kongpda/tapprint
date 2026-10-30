@@ -35,25 +35,18 @@ pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
     spawn_workers(server, &shared, port, "http")?;
     // Safari needs HTTPS. Failing here must not stop Chrome and Edge printing.
     #[cfg(target_os = "macos")]
-    if let Err(error) = serve_secure(&shared, port) {
+    if let Err(error) = serve_secure(port) {
         shared.set_status(Tone::Problem, format!("Safari support is off: {error}"));
     }
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn serve_secure(shared: &Arc<Shared>, port: u16) -> Result<(), String> {
+fn serve_secure(port: u16) -> Result<(), String> {
     let secure = crate::tls::secure_port(port).ok_or("no port is free for HTTPS")?;
     let identity = crate::tls::identity(&crate::model::data_dir())?;
-    let server = Server::https(
-        format!("127.0.0.1:{secure}"),
-        tiny_http::SslConfig {
-            certificate: identity.certificate.clone(),
-            private_key: identity.private_key.clone(),
-        },
-    )
-    .map_err(|error| format!("port {secure} could not be opened ({error})"))?;
-    spawn_workers(server, shared, secure, "https")?;
+    crate::tls::forward(secure, port, &identity)
+        .map_err(|error| format!("port {secure} could not be opened ({error})"))?;
     crate::tls::mark_serving(&identity.certificate_path);
     Ok(())
 }
@@ -384,8 +377,13 @@ fn local_host(host: Option<&str>, port: u16) -> bool {
     let Some((name, given)) = host.and_then(|host| host.rsplit_once(':')) else {
         return false;
     };
-    given.parse::<u16>().ok() == Some(port)
-        && (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
+    let given = given.parse::<u16>().ok();
+    // On a Mac the HTTPS front forwards here with its own port in `Host`.
+    #[cfg(target_os = "macos")]
+    let is_ours = given == Some(port) || given == crate::tls::secure_port(port);
+    #[cfg(not(target_os = "macos"))]
+    let is_ours = given == Some(port);
+    is_ours && (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
 }
 
 fn header(request: &Request, name: &str) -> Option<String> {
@@ -451,7 +449,7 @@ mod tests {
     fn only_this_computer_names_are_accepted_as_host() {
         assert!(local_host(Some("127.0.0.1:9240"), 9240));
         assert!(local_host(Some("localhost:9240"), 9240));
-        assert!(!local_host(Some("127.0.0.1:9241"), 9240));
+        assert!(!local_host(Some("127.0.0.1:9999"), 9240));
         // A rebound domain still carries its own name in the Host header.
         assert!(!local_host(Some("evil.example:9240"), 9240));
         assert!(!local_host(Some("127.0.0.1"), 9240));

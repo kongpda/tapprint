@@ -9,9 +9,13 @@
 //! serving Chrome and Edge as before.
 
 use std::fs;
+use std::io::{self, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rcgen::{CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, KeyPair};
@@ -58,6 +62,106 @@ pub struct Identity {
 /// The HTTPS port for a given HTTP port.
 pub fn secure_port(port: u16) -> Option<u16> {
     port.checked_add(1)
+}
+
+/// Most HTTPS connections open at once. A till needs a handful.
+const MAX_CONNECTIONS: usize = 32;
+/// A connection with no traffic for this long is dropped.
+const IDLE: Duration = Duration::from_secs(300);
+/// How often a forwarding loop looks at both sides.
+const TICK: Duration = Duration::from_millis(20);
+
+static OPEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Answer HTTPS on `secure` and hand each decrypted connection to the plain
+/// listener on `backend`, which holds all the rules (host, origin, pairing).
+pub fn forward(secure: u16, backend: u16, identity: &Identity) -> Result<(), String> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    let certificates = CertificateDer::pem_slice_iter(&identity.certificate)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("the saved certificate is unreadable: {error}"))?;
+    let key = PrivateKeyDer::from_pem_slice(&identity.private_key)
+        .map_err(|error| format!("the saved key is unreadable: {error}"))?;
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| error.to_string())?
+    .with_no_client_auth()
+    .with_single_cert(certificates, key)
+    .map_err(|error| format!("the certificate and key do not match: {error}"))?;
+    let config = Arc::new(config);
+    let listener = TcpListener::bind(("127.0.0.1", secure)).map_err(|error| error.to_string())?;
+    thread::Builder::new()
+        .name("tapprint-https".into())
+        .spawn(move || {
+            for socket in listener.incoming().flatten() {
+                if OPEN.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+                    OPEN.fetch_sub(1, Ordering::AcqRel);
+                    continue;
+                }
+                let config = Arc::clone(&config);
+                let spawned = thread::Builder::new()
+                    .name("tapprint-https-conn".into())
+                    .spawn(move || {
+                        let _ = relay(config, socket, backend);
+                        OPEN.fetch_sub(1, Ordering::AcqRel);
+                    });
+                if spawned.is_err() {
+                    OPEN.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn quiet(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+/// Copy bytes both ways between one TLS client and the plain listener until
+/// either side closes.
+fn relay(
+    config: Arc<rustls::ServerConfig>,
+    socket: TcpStream,
+    backend: u16,
+) -> Result<(), Box<dyn std::error::Error>> {
+    socket.set_read_timeout(Some(TICK))?;
+    let mut plain = TcpStream::connect(("127.0.0.1", backend))?;
+    plain.set_read_timeout(Some(TICK))?;
+    let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config)?, socket);
+    let mut buffer = [0u8; 16 * 1024];
+    let mut last = std::time::Instant::now();
+    while last.elapsed() < IDLE {
+        match tls.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(n) => {
+                plain.write_all(&buffer[..n])?;
+                last = std::time::Instant::now();
+            }
+            Err(error) if quiet(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+        match plain.read(&mut buffer) {
+            Ok(0) => {
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+                return Ok(());
+            }
+            Ok(n) => {
+                tls.write_all(&buffer[..n])?;
+                tls.flush()?;
+                last = std::time::Instant::now();
+            }
+            Err(error) if quiet(&error) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Read the saved certificate, or make one. A certificate near its end is
@@ -208,5 +312,52 @@ mod tests {
         let second = identity(&dir).unwrap();
         assert_eq!(first.certificate, second.certificate);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn https_requests_reach_the_plain_listener_only_when_the_certificate_matches() {
+        use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
+        let folder = std::env::temp_dir().join(format!("tapprint-fwd-{}", std::process::id()));
+        let identity = identity(&folder).unwrap();
+        let backend = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let backend_port = backend.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let (mut socket, _) = backend.accept().unwrap();
+            let mut seen = [0u8; 64];
+            let n = socket.read(&mut seen).unwrap();
+            assert!(seen[..n].starts_with(b"ping"));
+            socket.write_all(b"pong").unwrap();
+        });
+        let front = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let secure = front.local_addr().unwrap().port();
+        drop(front);
+        forward(secure, backend_port, &identity).unwrap();
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut roots = rustls::RootCertStore::empty();
+        for certificate in CertificateDer::pem_slice_iter(&identity.certificate) {
+            roots.add(certificate.unwrap()).unwrap();
+        }
+        let client = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let name = ServerName::try_from("127.0.0.1").unwrap();
+        let socket = loop {
+            if let Ok(socket) = TcpStream::connect(("127.0.0.1", secure)) {
+                break socket;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let mut tls =
+            rustls::StreamOwned::new(rustls::ClientConnection::new(client, name).unwrap(), socket);
+        tls.write_all(b"ping").unwrap();
+        let mut answer = [0u8; 4];
+        tls.read_exact(&mut answer).unwrap();
+        assert_eq!(&answer, b"pong");
+        let _ = fs::remove_dir_all(&folder);
     }
 }

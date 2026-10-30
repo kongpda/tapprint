@@ -960,6 +960,7 @@ fn config_path() -> PathBuf {
 }
 
 /// The folder holding the settings file and the local certificate.
+#[cfg(target_os = "macos")]
 pub fn data_dir() -> PathBuf {
     let mut path = config_path();
     path.pop();
