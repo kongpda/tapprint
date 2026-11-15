@@ -60,7 +60,7 @@ The full list is in the [HTTP API](../docs/api.md#errors).
 
 Chrome, Edge, and Firefox call TapPrint over plain `http://127.0.0.1`. Safari blocks that from an HTTPS page, so on a Mac TapPrint also answers over HTTPS on the next port (see the [HTTP API](../docs/api.md)). With `secure: "auto"` the client reads the status over plain HTTP first and over HTTPS second, and keeps the one that answered. Only that status read is tried twice. A print or a pairing request is sent once, to one address.
 
-In Safari the person at the till must choose **Set up Safari** on TapPrint's Settings tab once. Until then every call fails with reason `unreachable`.
+In Safari the person at the till must click **Set up** beside **Safari** on TapPrint's Settings tab once. Until then every call fails with reason `unreachable`.
 
 ## Tests
 

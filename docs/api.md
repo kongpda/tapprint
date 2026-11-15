@@ -4,7 +4,7 @@ Most pages should use the [browser client](../client/README.md). This page is fo
 
 TapPrint listens on `127.0.0.1` and the saved port (9240 by default). If the port is taken, it stops. It will not sit on the next port and catch the till page.
 
-The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Chrome and Edge use plain HTTP. Safari blocks an HTTPS page from calling plain HTTP, so on macOS TapPrint also serves the same API over HTTPS on `127.0.0.1:<port + 1>` (9241). Open the Settings tab, choose **Set up Safari**, and approve the macOS prompt once. The certificate is self-signed, covers only `127.0.0.1` and `localhost`, and its key stays in the settings folder. The browser client finds the right address by itself: it tries plain HTTP, then HTTPS.
+The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Chrome and Edge use plain HTTP. Safari blocks an HTTPS page from calling plain HTTP, so on macOS TapPrint also serves the same API over HTTPS on `127.0.0.1:<port + 1>` (9241). Open the Settings tab, click **Set up** beside **Safari**, and approve the macOS prompt once. The certificate is self-signed, covers only `127.0.0.1` and `localhost`, and its key stays in the settings folder. The browser client finds the right address by itself: it tries plain HTTP, then HTTPS.
 
 Chrome 142 and later ask once per site before a page can reach apps on this computer (Local Network Access). Chrome 145 and later call this permission "Apps on device". The person at the till must click **Allow**. If they block it, the client reports `unreachable`. Reset it in the site settings (the icon left of the address). A cross-origin till page inside an iframe needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
 
@@ -148,6 +148,6 @@ Render Khmer and any QR code into the PNG. The printer has no Khmer code page.
 
 Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
 
-On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs **Set up Safari** again.
+On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs setting up again.
 
 TapPrint was called Receipt Till. On first start it reads an old `Receipt Till` (or `receipt-till`) settings file. The old file is left in place.

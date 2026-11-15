@@ -20,7 +20,7 @@ use gpui_ce_elements::editable_text::{
 use gpui_ce_platform::application;
 use gpui_tray::{Icon, Tray};
 
-use crate::model::{Paper, Shared, Tone, Transport};
+use crate::model::{Paper, Shared, Snapshot, Tone, Transport};
 use crate::print;
 
 actions!(
@@ -49,13 +49,9 @@ const BUSY_FG: u32 = 0x775b18;
 const BAD_BG: u32 = 0xfceeed;
 const BAD_FG: u32 = 0x9d3833;
 
-const NO_SITES: &str =
-    "No websites yet. When your till page asks to print, its request shows here for you to allow.";
-const RAW_HELP: &str = "Off is recommended. Raw ESC/POS commands can change printer settings. Turn it on only if your till needs it.";
-const USB_HELP: &str = "USB printers must use Printer Class. Remove a conflicting system print queue, then reconnect the printer.";
-
 // Embedded vector icons keep the local bundle self-contained.
 const EYE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
+const INFO: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>"#;
 const EYE_OFF: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3 4M6 6.5A19 19 0 0 0 2 12s3.5 7 10 7a13 13 0 0 0 5.5-1.5M10 10a3 3 0 0 0 4 4"/></svg>"#;
 
 struct AppGlobal {
@@ -283,7 +279,7 @@ fn open_window(_: &OpenWindow, cx: &mut App) {
     else {
         return;
     };
-    let bounds = Bounds::centered(None, size(px(480.), px(660.)), cx);
+    let bounds = Bounds::centered(None, size(px(440.), px(600.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitlebarOptions {
@@ -292,7 +288,7 @@ fn open_window(_: &OpenWindow, cx: &mut App) {
             traffic_light_position: None,
         }),
         is_resizable: true,
-        window_min_size: Some(size(px(420.), px(520.))),
+        window_min_size: Some(size(px(380.), px(460.))),
         ..Default::default()
     };
     let opened = cx.open_window(options, |_window, cx| {
@@ -447,11 +443,32 @@ enum Page {
     Settings,
 }
 
+/// The search for printers on the network.
+#[derive(Clone, PartialEq, Eq)]
+enum Search {
+    Idle,
+    Running,
+    Done(Vec<String>),
+}
+
+// Help stays out of the way until its (i) is clicked. One note is open at a time.
+const HELP_USB: &str = "Set the printer's USB port to Printer Class. If the system made a print queue for it, remove the queue and plug the printer in again.";
+const HELP_NETWORK: &str = "Find printers looks on this computer's own network. If yours is not found, type its address. The port is almost always 9100.";
+const HELP_DRAWER: &str = "Most drawers use pin 2. If Open drawer does nothing, try pin 5.";
+const HELP_SITES: &str =
+    "When your till page asks to print, it appears at the top of this window for you to allow.";
+const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
+const HELP_CODE: &str = "For curl, servers, and kiosks. It works from any program on this computer, so keep it private. Websites do not need it.";
+const HELP_PAIR_NEW: &str = "It will be able to print and open the drawer. The address above is the one thing a page cannot fake. If unsure, choose Don't allow.";
+const HELP_PAIR_KNOWN: &str = "This site can already print, so it should not need to ask. Allow only if you just cleared its browser or set the till up again. Its old code stops working.";
+#[cfg(target_os = "macos")]
+const HELP_SAFARI: &str = "Safari blocks plain connections from a secure page. This adds a certificate that only covers this computer. macOS asks for your approval.";
+
 struct TillView {
     page: Page,
     show_code: bool,
     shared: Arc<Shared>,
-    snapshot: crate::model::Snapshot,
+    snapshot: Snapshot,
     host: Entity<EditableTextState>,
     port: Entity<EditableTextState>,
     /// The first click on New code only asks. The second one replaces it.
@@ -461,6 +478,9 @@ struct TillView {
     copied: bool,
     /// Read once when the window opens, then kept in step with the toggle.
     autostart: bool,
+    /// The help note that is open, by the name of its (i).
+    help: Option<&'static str>,
+    search: Search,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -487,6 +507,8 @@ impl TillView {
             confirm_remove: None,
             copied: false,
             autostart: crate::autostart::enabled(),
+            help: None,
+            search: Search::Idle,
             _subscriptions: subscriptions,
         }
     }
@@ -546,37 +568,6 @@ impl TillView {
         self.pull(cx);
     }
 
-    #[cfg(target_os = "macos")]
-    fn safari_card(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let trusted = crate::tls::is_trusted();
-        let card = card()
-            .child(label("SAFARI"))
-            .child(div().text_sm().child(if trusted {
-                "Safari support is on"
-            } else {
-                "Safari support is not set up"
-            }));
-        if trusted {
-            return card.child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child("Till pages in Safari can print. Chrome and Edge need nothing extra."),
-            );
-        }
-        card.child(
-            div().text_xs().text_color(rgb(MUTED)).child(
-                "Safari blocks plain connections from a secure till page. Allow TapPrint's local certificate once. macOS asks for your approval, and the certificate only covers this computer.",
-            ),
-        )
-        .child(button(
-            "safari-setup",
-            "Set up Safari",
-            true,
-            cx.listener(|view, _: &ClickEvent, _, cx| view.set_up_safari(cx)),
-        ))
-    }
-
     fn set_autostart(&mut self, on: bool, cx: &mut Context<Self>) {
         match crate::autostart::set(on) {
             Ok(()) => {
@@ -616,143 +607,123 @@ impl TillView {
         }
         self.pull(cx);
     }
+
+    /// Switch to the network printer. With no address saved yet, start
+    /// looking for one straight away, so the next click can be the last.
+    fn choose_network(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.shared.use_saved_network() {
+            self.shared.set_status(Tone::Problem, error);
+        }
+        self.pull(cx);
+        if self.snapshot.tcp_host.is_empty() && self.search == Search::Idle {
+            self.find_printers(cx);
+        }
+    }
+
+    fn find_printers(&mut self, cx: &mut Context<Self>) {
+        if self.search == Search::Running {
+            return;
+        }
+        self.search = Search::Running;
+        cx.spawn(async move |this, cx| {
+            let found = cx
+                .background_executor()
+                .spawn(async { print::find_network_printers() })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.search = Search::Done(found);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// One click on a found printer fills the fields and saves it.
+    fn use_found(&mut self, host: &str, cx: &mut Context<Self>) {
+        self.host.update(cx, |state, cx| state.emplace(host, cx));
+        self.port.update(cx, |state, cx| {
+            state.emplace(&print::RAW_PORT.to_string(), cx);
+        });
+        self.save_network(cx);
+    }
+
+    /// The (i) beside a setting. It opens the note with the same name.
+    fn info(&self, name: &'static str, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let open = self.help == Some(name);
+        icon_button(
+            SharedString::from(format!("info-{name}")),
+            INFO,
+            if open { "Hide help" } else { "Show help" },
+            open,
+            cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.help = if view.help == Some(name) {
+                    None
+                } else {
+                    Some(name)
+                };
+                cx.notify();
+            }),
+        )
+    }
+
+    /// The note for `name`, when its (i) was clicked.
+    fn note(&self, name: &'static str, text: impl Into<SharedString>) -> Option<gpui::Div> {
+        (self.help == Some(name)).then(|| {
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(rgb(PAPER))
+                .text_xs()
+                .text_color(rgb(MUTED))
+                .child(text.into())
+        })
+    }
+
+    /// A setting's name with its (i).
+    fn named(&self, title: &'static str, help: &'static str, cx: &mut Context<Self>) -> gpui::Div {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(div().text_sm().child(title))
+            .child(self.info(help, cx))
+    }
 }
 
 impl Render for TillView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
-        let (pill_bg, pill_fg) = match snapshot.tone {
-            Tone::Ready => (READY_BG, READY_FG),
-            Tone::Busy => (BUSY_BG, BUSY_FG),
-            Tone::Problem => (BAD_BG, BAD_FG),
+        let content = match self.page {
+            Page::Printer => self.printer_page(cx, &snapshot),
+            Page::Websites => self.websites_page(cx, &snapshot),
+            Page::Settings => self.settings_page(cx, &snapshot),
         };
-        let transport = match snapshot.transport {
-            Transport::Usb => "USB",
-            Transport::Tcp => "Network",
-        };
-        let saved_host = if snapshot.tcp_host.is_empty() {
-            "No network printer saved".to_string()
-        } else {
-            format!("Saved {}:{}", snapshot.tcp_host, snapshot.tcp_port)
-        };
-
-        let mut content = div().flex().flex_col().gap_3();
-        match self.page {
-            Page::Printer => {
-                let no_printer =
-                    snapshot.transport == Transport::Usb && snapshot.printers.is_empty();
-                content = content.child(
-                    card()
-                        .child(label("PRINTER"))
-                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
-                            if no_printer {
-                                "Connect your printer".to_string()
-                            } else {
-                                snapshot.status.clone()
-                            },
-                        ))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child(if no_printer {
-                            "Plug in a USB receipt printer, or choose Network below.".to_string()
-                        } else {
-                            format!(
-                                "{transport} connection · {} mm paper",
-                                snapshot.paper.millimetres()
-                            )
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(choice(
-                                    "transport-usb",
-                                    "USB",
-                                    snapshot.transport == Transport::Usb,
-                                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                                        if view.shared.set_transport(Transport::Usb).is_ok() {
-                                            view.shared.set_status(Tone::Ready, "Using USB");
-                                        }
-                                        view.pull(cx);
-                                    }),
-                                ))
-                                .child(choice(
-                                    "transport-network",
-                                    "Network",
-                                    snapshot.transport == Transport::Tcp,
-                                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                                        if let Err(error) = view.shared.use_saved_network() {
-                                            view.shared.set_status(Tone::Problem, error);
-                                        }
-                                        view.pull(cx);
-                                    }),
-                                )),
-                        ),
-                );
-                content = match snapshot.transport {
-                    Transport::Usb => content.child(self.printer_card(cx, &snapshot)),
-                    Transport::Tcp => content.child(self.network_card(cx, &saved_host)),
-                };
-                content = content
-                    .child(self.paper_card(cx, &snapshot))
-                    .child(self.drawer_card(cx, &snapshot))
-                    .child(self.job_buttons(cx))
-                    .child(
-                        div().text_xs().text_color(rgb(MUTED)).child(
-                            snapshot
-                                .last_job
-                                .clone()
-                                .unwrap_or_else(|| "Nothing printed this session.".to_string()),
-                        ),
-                    );
-            }
-            Page::Websites => {
-                content = content
-                    .child(self.sites_card(cx, &snapshot))
-                    .child(self.activity_card(&snapshot));
-            }
-            Page::Settings => {
-                #[cfg(target_os = "macos")]
-                if crate::tls::serving() {
-                    content = content.child(self.safari_card(cx));
-                }
-                let about = format!(
-                    "TapPrint {} · 127.0.0.1:{}",
-                    env!("CARGO_PKG_VERSION"),
-                    snapshot.port
-                );
-                let settings_file = format!("Settings: {}", snapshot.config_path);
-                content = content
-                    .child(self.startup_card(cx))
-                    .child(self.code_card(cx, &snapshot))
-                    .child(self.raw_card(cx, &snapshot))
-                    .child(
-                        card()
-                            .child(label("ABOUT"))
-                            .child(hint(about))
-                            .child(hint(USB_HELP))
-                            .child(hint(settings_file)),
-                    );
-            }
-        }
-        let mut tabs = div().flex().gap_2().px_4().pb_3();
+        let mut tabs = segments().mx_4().mb_3();
         for (id, title, page) in [
             ("tab-printer", "Printer", Page::Printer),
             ("tab-websites", "Websites", Page::Websites),
             ("tab-settings", "Settings", Page::Settings),
         ] {
-            tabs = tabs.child(choice(
-                id,
-                title,
-                self.page == page,
-                cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.page = page;
-                    view.show_code = false;
-                    // A half-made choice must not still be armed on return.
-                    view.confirm_rotate = false;
-                    view.confirm_remove = None;
-                    view.copied = false;
-                    cx.notify();
-                }),
-            ));
+            tabs = tabs.child(
+                segment(
+                    id,
+                    title,
+                    self.page == page,
+                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        view.page = page;
+                        view.show_code = false;
+                        view.help = None;
+                        // A half-made choice must not still be armed on return.
+                        view.confirm_rotate = false;
+                        view.confirm_remove = None;
+                        view.copied = false;
+                        cx.notify();
+                    }),
+                )
+                .flex_1(),
+            );
         }
         div()
             .size_full()
@@ -760,12 +731,12 @@ impl Render for TillView {
             .flex_col()
             .bg(rgb(PAPER))
             .text_color(rgb(INK))
-            .child(header(&snapshot, pill_bg, pill_fg))
+            .child(header(&snapshot))
             .children(self.pair_card(cx, &snapshot))
             .child(tabs)
             .child(
                 div()
-                    .id("settings")
+                    .id("page")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -773,111 +744,358 @@ impl Render for TillView {
                     .pb_4()
                     .child(content),
             )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .px_4()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(rgb(SOFT))
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child("Only this computer")
-                    // Test slips and drawer pulses count too, so not "receipts".
-                    .child(format!(
-                        "{} {} this session",
-                        snapshot.jobs,
-                        if snapshot.jobs == 1 { "job" } else { "jobs" }
-                    )),
-            )
     }
 }
 
 impl TillView {
     /// Shown above everything while a site waits, so it cannot be missed.
-    fn pair_card(
-        &self,
-        cx: &mut Context<Self>,
-        snapshot: &crate::model::Snapshot,
-    ) -> Option<gpui::Div> {
+    fn pair_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> Option<gpui::Div> {
         let request = snapshot.pair_request.clone()?;
         let serial = request.serial;
-        // The address above is the only thing a page cannot fake. The name
-        // below is whatever the page chose to call itself.
-        let advice = if request.known {
-            "This site can already print, so it should not need to ask. Allow only if you just cleared this browser or set up the till again. The code it had before stops working."
+        let (advice, help) = if request.known {
+            ("Already allowed. Allow again?", HELP_PAIR_KNOWN)
         } else {
-            "Allow only if this is your shop's till site and you just pressed print or connect on it. It will be able to print and open the drawer. If unsure, choose Don't allow."
+            ("Allow only if this is your till site.", HELP_PAIR_NEW)
         };
         Some(
             div().px_4().pb_3().child(
                 card()
+                    .border_color(rgb(BUSY_FG))
                     .bg(rgb(BUSY_BG))
-                    .text_color(rgb(BUSY_FG))
-                    .child(label("A website wants to print"))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(label("WANTS TO PRINT"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(BUSY_FG))
+                                    .child(format!("{} s", request.seconds_left)),
+                            ),
+                    )
                     .child(
                         div()
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(request.origin),
                     )
-                    .child(div().text_sm().child(advice))
-                    .child(hint(format!(
-                        "The page calls itself \u{201c}{}\u{201d}. It waits {} more seconds. Esc means Don't allow.",
-                        request.client, request.seconds_left
-                    )))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().text_sm().child(advice))
+                            .child(self.info("pair", cx)),
+                    )
+                    .children(self.note(
+                        "pair",
+                        format!(
+                            "{help} The page calls itself \u{201c}{}\u{201d}. Esc means Don't allow.",
+                            request.client
+                        ),
+                    ))
                     .child(
                         div()
                             .flex()
                             .gap_2()
                             // Same weight for both, so neither is the obvious click.
-                            .child(choice(
-                                "pair-allow",
-                                "Allow",
-                                false,
-                                cx.listener(move |view, _: &ClickEvent, _, cx| {
-                                    view.shared.answer_pair(serial, true);
-                                    view.pull(cx);
-                                }),
-                            ))
-                            .child(choice(
-                                "pair-deny",
-                                "Don't allow",
-                                false,
-                                cx.listener(move |view, _: &ClickEvent, _, cx| {
-                                    view.shared.answer_pair(serial, false);
-                                    view.pull(cx);
-                                }),
-                            )),
+                            .child(
+                                button(
+                                    "pair-allow",
+                                    "Allow",
+                                    Kind::Plain,
+                                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                        view.shared.answer_pair(serial, true);
+                                        view.pull(cx);
+                                    }),
+                                )
+                                .flex_1(),
+                            )
+                            .child(
+                                button(
+                                    "pair-deny",
+                                    "Don't allow",
+                                    Kind::Plain,
+                                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                        view.shared.answer_pair(serial, false);
+                                        view.pull(cx);
+                                    }),
+                                )
+                                .flex_1(),
+                            ),
                     ),
             ),
         )
     }
 
-    fn sites_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        let mut list = div().flex().flex_col().gap_2();
-        if snapshot.sites.is_empty() {
-            list = list.child(div().text_sm().text_color(rgb(MUTED)).child(NO_SITES));
+    fn printer_page(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let usb = snapshot.transport == Transport::Usb;
+        let connection = card()
+            .child(
+                row().child(div().text_sm().child("Connection")).child(
+                    segments()
+                        .child(segment(
+                            "transport-usb",
+                            "USB",
+                            usb,
+                            cx.listener(|view, _: &ClickEvent, _, cx| {
+                                if view.shared.set_transport(Transport::Usb).is_ok() {
+                                    view.shared.set_status(Tone::Ready, "Using USB");
+                                }
+                                view.pull(cx);
+                            }),
+                        ))
+                        .child(segment(
+                            "transport-network",
+                            "Network",
+                            !usb,
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.choose_network(cx)),
+                        )),
+                ),
+            )
+            .child(divider())
+            .child(if usb {
+                self.usb_list(cx, snapshot)
+            } else {
+                self.network_form(cx, snapshot)
+            });
+
+        let mut paper = segments();
+        for (id, title, size) in [
+            ("paper-80", "80 mm", Paper::Mm80),
+            ("paper-58", "58 mm", Paper::Mm58),
+        ] {
+            paper = paper.child(segment(
+                id,
+                title,
+                snapshot.paper == size,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.shared.set_paper(size);
+                    view.pull(cx);
+                }),
+            ));
         }
-        for origin in &snapshot.sites {
-            let remove = origin.clone();
-            let asked = self.confirm_remove.as_ref() == Some(origin);
-            list = list.child(
+        let mut pins = segments();
+        for (id, title, pin) in [
+            ("drawer-pin-2", "Pin 2", 2u8),
+            ("drawer-pin-5", "Pin 5", 5u8),
+        ] {
+            pins = pins.child(segment(
+                id,
+                title,
+                snapshot.drawer_pin == pin,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.shared.set_drawer_pin(pin);
+                    view.pull(cx);
+                }),
+            ));
+        }
+        let options = card()
+            .child(row().child(div().text_sm().child("Paper")).child(paper))
+            .child(divider())
+            .child(
+                row()
+                    .child(self.named("Cash drawer", "drawer", cx))
+                    .child(pins),
+            )
+            .children(self.note("drawer", HELP_DRAWER));
+
+        let actions = div()
+            .flex()
+            .gap_2()
+            .child(
+                button(
+                    "test-slip",
+                    "Print test",
+                    Kind::Primary,
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.job("Printing a test slip", print::print_test, cx)
+                    }),
+                )
+                .flex_1(),
+            )
+            .child(
+                button(
+                    "open-drawer",
+                    "Open drawer",
+                    Kind::Plain,
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.job("Opening the drawer", print::open_drawer, cx)
+                    }),
+                )
+                .flex_1(),
+            );
+
+        let last = snapshot
+            .last_job
+            .clone()
+            .unwrap_or_else(|| "Nothing printed yet".to_string());
+        page()
+            .child(connection)
+            .child(options)
+            .child(actions)
+            .child(hint(last).px_1())
+    }
+
+    fn usb_list(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let mut list = div().flex().flex_col().gap_1();
+        if snapshot.printers.is_empty() {
+            let message = if snapshot.listed {
+                "Plug in your printer"
+            } else {
+                "Looking for printers…"
+            };
+            return list
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().text_sm().text_color(rgb(MUTED)).child(message))
+                        .child(self.info("usb", cx)),
+                )
+                .children(self.note("usb", HELP_USB));
+        }
+        for (id, name) in &snapshot.printers {
+            let selected = snapshot.usb_id.as_ref() == Some(id);
+            let id = id.clone();
+            list = list.child(option_row(
+                SharedString::from(format!("usb-{id}")),
+                name.clone(),
+                selected,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.shared.select_usb(id.clone());
+                    view.pull(cx);
+                }),
+            ));
+        }
+        list
+    }
+
+    fn network_form(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let typed = self.host.read(cx).as_str().trim().to_string();
+        let port = self.port.read(cx).as_str().trim().to_string();
+        let saved = !snapshot.tcp_host.is_empty()
+            && typed == snapshot.tcp_host
+            && port == snapshot.tcp_port.to_string();
+        let mut form = div()
+            .key_context("TapPrint")
+            .on_action(cx.listener(Self::on_save))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        field(
+                            text_input("tcp-host").state(self.host.downgrade()),
+                            "Printer address",
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        field(text_input("tcp-port").state(self.port.downgrade()), "9100")
+                            .w(px(68.)),
+                    )
+                    .child(button(
+                        "use-network",
+                        if saved { "Saved" } else { "Save" },
+                        if saved { Kind::Plain } else { Kind::Primary },
+                        cx.listener(|view, _: &ClickEvent, _, cx| view.save_network(cx)),
+                    )),
+            );
+        let searching = self.search == Search::Running;
+        form =
+            form.child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_2()
-                    .child(div().text_sm().child(origin.clone()))
-                    .child(choice(
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(div().text_sm().text_color(rgb(MUTED)).child(
+                                match &self.search {
+                                    Search::Idle => "Don't know the address?".to_string(),
+                                    Search::Running => "Looking on your network…".to_string(),
+                                    Search::Done(found) if found.is_empty() => {
+                                        "No printer found".to_string()
+                                    }
+                                    Search::Done(found) if found.len() == 1 => {
+                                        "Found 1 printer".to_string()
+                                    }
+                                    Search::Done(found) => {
+                                        format!("Found {} printers", found.len())
+                                    }
+                                },
+                            ))
+                            .child(self.info("network", cx)),
+                    )
+                    .when(!searching, |line| {
+                        line.child(button(
+                            "find-printers",
+                            if self.search == Search::Idle {
+                                "Find printers"
+                            } else {
+                                "Look again"
+                            },
+                            Kind::Plain,
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.find_printers(cx)),
+                        ))
+                    }),
+            );
+        if let Search::Done(found) = &self.search {
+            for host in found {
+                let selected = *host == snapshot.tcp_host;
+                let pick = host.clone();
+                form = form.child(option_row(
+                    SharedString::from(format!("found-{host}")),
+                    host.clone(),
+                    selected,
+                    cx.listener(move |view, _: &ClickEvent, _, cx| view.use_found(&pick, cx)),
+                ));
+            }
+        }
+        form.children(self.note("network", HELP_NETWORK))
+    }
+
+    fn websites_page(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let mut sites = card().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(label("ALLOWED WEBSITES"))
+                .child(self.info("sites", cx)),
+        );
+        sites = sites.children(self.note("sites", HELP_SITES));
+        if snapshot.sites.is_empty() {
+            sites = sites.child(div().text_sm().text_color(rgb(MUTED)).child("None yet"));
+        }
+        for origin in &snapshot.sites {
+            let remove = origin.clone();
+            let asked = self.confirm_remove.as_ref() == Some(origin);
+            sites = sites.child(
+                row()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .truncate()
+                            .child(origin.clone()),
+                    )
+                    .child(button(
                         SharedString::from(format!("remove-{origin}")),
-                        if asked {
-                            "Click again to remove"
-                        } else {
-                            "Remove"
-                        },
-                        asked,
+                        if asked { "Really remove?" } else { "Remove" },
+                        if asked { Kind::Danger } else { Kind::Plain },
                         cx.listener(move |view, _: &ClickEvent, _, cx| {
                             let confirmed = view.confirm_remove.as_ref() == Some(&remove);
                             if confirmed {
@@ -891,24 +1109,69 @@ impl TillView {
                     )),
             );
         }
-        let mut card = card().child(label("ALLOWED WEBSITES")).child(list);
-        if self.confirm_remove.is_some() {
-            card = card.child(hint(
-                "The site stops printing until it asks again and you allow it.",
-            ));
+        let mut body = page().child(sites);
+        if !snapshot.clients.is_empty() {
+            let mut open = card().child(label("TILL PAGES"));
+            for client in &snapshot.clients {
+                let state = if client.live {
+                    "connected".to_string()
+                } else {
+                    crate::model::ago_words(Duration::from_secs(client.seconds_ago))
+                };
+                open = open.child(
+                    row()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .truncate()
+                                .child(client.label.clone()),
+                        )
+                        .child(pill(state, client.live)),
+                );
+            }
+            body = body.child(open);
         }
-        card
+        body
     }
 
-    fn raw_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        card()
+    fn settings_page(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let mut switches = card().child(
+            row()
+                .child(div().text_sm().child("Start at login"))
+                .child(toggle(
+                    "autostart-toggle",
+                    "Start TapPrint at login",
+                    self.autostart,
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.set_autostart(!view.autostart, cx)
+                    }),
+                )),
+        );
+        #[cfg(target_os = "macos")]
+        if crate::tls::serving() {
+            let line = row().child(self.named("Safari", "safari", cx));
+            let line = if crate::tls::is_trusted() {
+                line.child(pill("On".to_string(), true))
+            } else {
+                line.child(button(
+                    "safari-setup",
+                    "Set up",
+                    Kind::Primary,
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.set_up_safari(cx)),
+                ))
+            };
+            switches = switches
+                .child(divider())
+                .child(line)
+                .children(self.note("safari", HELP_SAFARI));
+        }
+        switches = switches
+            .child(divider())
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(setting("Raw printer commands"))
+                row()
+                    .child(self.named("Raw printer commands", "raw", cx))
                     .child(toggle(
                         "raw-toggle",
                         "Allow raw printer commands",
@@ -919,338 +1182,106 @@ impl TillView {
                         }),
                     )),
             )
-            .child(hint(RAW_HELP))
-    }
+            .children(self.note("raw", HELP_RAW));
 
-    fn activity_card(&self, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        let mut rows = div().flex().flex_col().gap_1();
-        if snapshot.clients.is_empty() {
-            rows = rows.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(MUTED))
-                    .child("No till page is open."),
-            );
-        } else {
-            for client in &snapshot.clients {
-                let state = if client.live {
-                    "connected".to_string()
-                } else {
-                    crate::model::ago_words(std::time::Duration::from_secs(client.seconds_ago))
-                };
-                rows = rows.child(
+        let code = card()
+            .child(
+                row().child(self.named("Pairing code", "code", cx)).child(
                     div()
-                        .text_sm()
-                        .child(format!("{}  ·  {state}", client.label)),
-                );
-            }
-        }
-        let last = snapshot
-            .last_job
-            .clone()
-            .unwrap_or_else(|| "No print yet".to_string());
-        card()
-            .child(label("RECENT ACTIVITY"))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child("Till pages open on this computer."),
-            )
-            .child(rows)
-            .child(hint(format!("Last job: {last}")))
-    }
-
-    fn code_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        let copy_label = if self.copied { "Copied" } else { "Copy code" };
-        let (rotate_label, rotate_hint) = if self.confirm_rotate {
-            (
-                "Replace code",
-                "Anything using this code stops printing until you paste the new one. Allowed sites keep working. Click Replace code to go ahead.",
-            )
-        } else {
-            (
-                "New code",
-                "Keep this code private. It works from any program on this computer.",
-            )
-        };
-        card()
-            .child(label("MANUAL PAIRING"))
-            .child(
-                div().text_xs().text_color(rgb(MUTED)).child(
-                    "For curl, servers, and kiosks. Websites do not need it: they ask, and you click Allow.",
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(rgb(SOFT))
-                    .bg(rgb(PAPER))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .line_height(px(22.))
-                            .child(if self.show_code {
-                                grouped_code(&snapshot.pairing_code)
-                            } else {
-                                "•••• •••• •••• ••••".to_string()
-                            }),
-                    )
-                    .child(
-                        div()
-                            .id("reveal-code")
-                            .role(gpui::Role::Button)
-                            .aria_label(if self.show_code {
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(icon_button(
+                            "reveal-code",
+                            if self.show_code { EYE_OFF } else { EYE },
+                            if self.show_code {
                                 "Hide pairing code"
                             } else {
                                 "Show pairing code"
-                            })
-                            .focusable()
-                            .tab_index(0)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(36.))
-                            .h(px(36.))
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(PAPER))
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(SOFT)))
-                            .focus_visible(|style| style.border_color(rgb(READY_FG)))
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                            },
+                            false,
+                            cx.listener(|view, _: &ClickEvent, _, cx| {
                                 view.show_code = !view.show_code;
                                 cx.notify();
-                            }))
-                            .child(
-                                gpui::svg()
-                                    .data(if self.show_code { EYE_OFF } else { EYE })
-                                    .w(px(18.))
-                                    .h(px(18.))
-                                    .text_color(rgb(MUTED)),
-                            ),
-                    ),
+                            }),
+                        ))
+                        .child(button(
+                            "copy-code",
+                            if self.copied { "Copied" } else { "Copy" },
+                            Kind::Plain,
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)),
+                        ))
+                        .child(button(
+                            "new-code",
+                            if self.confirm_rotate {
+                                "Really replace?"
+                            } else {
+                                "New"
+                            },
+                            if self.confirm_rotate {
+                                Kind::Danger
+                            } else {
+                                Kind::Plain
+                            },
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.rotate(cx)),
+                        )),
+                ),
             )
-            .child(hint(rotate_hint))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(choice(
-                        "copy-code",
-                        copy_label,
-                        true,
-                        cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)),
-                    ))
-                    .child(choice(
-                        "new-code",
-                        rotate_label,
-                        false,
-                        cx.listener(|view, _: &ClickEvent, _, cx| view.rotate(cx)),
-                    )),
-            )
-    }
-
-    fn paper_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        card().child(label("PAPER")).child(
-            div()
-                .flex()
-                .gap_2()
-                .child(choice(
-                    "paper-80",
-                    "80 mm",
-                    snapshot.paper == Paper::Mm80,
-                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.shared.set_paper(Paper::Mm80);
-                        view.pull(cx);
-                    }),
+            .children(self.note("code", HELP_CODE))
+            .when(self.show_code, |card| {
+                card.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(rgb(PAPER))
+                        .text_sm()
+                        .child(grouped_code(&snapshot.pairing_code)),
+                )
+            })
+            .when(self.confirm_rotate, |card| {
+                card.child(hint(
+                    "Anything using the old code stops printing. Allowed websites keep working.",
                 ))
-                .child(choice(
-                    "paper-58",
-                    "58 mm",
-                    snapshot.paper == Paper::Mm58,
-                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.shared.set_paper(Paper::Mm58);
-                        view.pull(cx);
-                    }),
-                )),
-        )
-    }
+            });
 
-    fn drawer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        let mut pins = div().flex().gap_2();
-        for (id, title, pin) in [
-            ("drawer-pin-2", "Pin 2", 2u8),
-            ("drawer-pin-5", "Pin 5", 5u8),
-        ] {
-            pins = pins.child(choice(
-                id,
-                title,
-                snapshot.drawer_pin == pin,
-                cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.shared.set_drawer_pin(pin);
-                    view.pull(cx);
-                }),
-            ));
-        }
-        card().child(label("CASH DRAWER")).child(pins).child(hint(
-            "Most drawers use pin 2. If Open drawer does nothing, try pin 5.",
-        ))
-    }
-
-    fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        let mut list = div().flex().flex_col().gap_2();
-        if snapshot.printers.is_empty() {
-            let message = if snapshot.listed {
-                "No USB printer is plugged in."
-            } else {
-                "Looking for USB printers…"
-            };
-            list = list.child(div().text_sm().text_color(rgb(MUTED)).child(message));
-        } else {
-            for (id, name) in &snapshot.printers {
-                let selected =
-                    snapshot.transport == Transport::Usb && snapshot.usb_id.as_ref() == Some(id);
-                let caption = if selected {
-                    format!("{name}  ·  In use")
-                } else {
-                    name.clone()
-                };
-                let id = id.clone();
-                list = list.child(choice(
-                    SharedString::from(format!("usb-{id}")),
-                    caption,
-                    selected,
-                    cx.listener(move |view, _: &ClickEvent, _, cx| {
-                        view.shared.select_usb(id.clone());
-                        view.pull(cx);
-                    }),
-                ));
-            }
-        }
-        card().child(label("USB PRINTER")).child(list).child(hint(
-            "A single printer is chosen for you. With several, pick one.",
-        ))
-    }
-
-    fn network_card(&self, cx: &mut Context<Self>, saved_host: &str) -> gpui::Div {
-        card()
-            .key_context("TapPrint")
-            .on_action(cx.listener(Self::on_save))
-            .child(label("NETWORK PRINTER"))
-            .child(hint(
-                "Port 9100 is the usual raw printer port. Press Enter to use this address.",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        text_input("tcp-host")
-                            .state(self.host.downgrade())
-                            .placeholder("192.168.1.20")
-                            .placeholder_color(rgb(MUTED))
-                            .caret_color(gpui::black())
-                            .selection_color(hsla(0.58, 0.28, 0.72, 0.7))
-                            .caret_blink_interval_500ms()
-                            .flex_1()
-                            .px_3()
-                            .py_2()
-                            .bg(rgb(PAPER))
-                            .border_1()
-                            .rounded_md()
-                            .text_sm(),
-                    )
-                    .child(
-                        text_input("tcp-port")
-                            .state(self.port.downgrade())
-                            .placeholder("9100")
-                            .placeholder_color(rgb(MUTED))
-                            .caret_color(gpui::black())
-                            .selection_color(hsla(0.58, 0.28, 0.72, 0.7))
-                            .caret_blink_interval_500ms()
-                            .w(px(84.))
-                            .px_3()
-                            .py_2()
-                            .bg(rgb(PAPER))
-                            .border_1()
-                            .rounded_md()
-                            .text_sm(),
-                    ),
-            )
-            .child(hint(saved_host.to_string()))
-            .child(choice(
-                "use-network",
-                "Use this address",
-                true,
-                cx.listener(|view, _: &ClickEvent, _, cx| view.save_network(cx)),
-            ))
-    }
-
-    fn startup_card(&self, cx: &mut Context<Self>) -> gpui::Div {
-        card()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(setting("Start at login"))
-                    .child(toggle(
-                        "autostart-toggle",
-                        "Start TapPrint at login",
-                        self.autostart,
-                        cx.listener(|view, _: &ClickEvent, _, cx| {
-                            view.set_autostart(!view.autostart, cx)
-                        }),
-                    )),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(rgb(MUTED))
-                    .child("Keep this till ready to print after a restart."),
-            )
-    }
-
-    fn job_buttons(&self, cx: &mut Context<Self>) -> gpui::Div {
-        div()
+        let about = div()
             .flex()
-            .gap_2()
-            .child(choice(
-                "test-slip",
-                "Print test slip",
-                true,
-                cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.job("Printing a test slip", print::print_test, cx)
-                }),
-            ))
-            .child(choice(
-                "open-drawer",
-                "Open drawer",
-                false,
-                cx.listener(|view, _: &ClickEvent, _, cx| {
-                    view.job("Opening the drawer", print::open_drawer, cx)
-                }),
+            .items_center()
+            .gap_1()
+            .px_1()
+            .child(hint(format!(
+                "TapPrint {} · port {}",
+                env!("CARGO_PKG_VERSION"),
+                snapshot.port
+            )))
+            .child(self.info("about", cx));
+        page()
+            .child(switches)
+            .child(code)
+            .child(about)
+            .children(self.note(
+                "about",
+                format!("Settings are kept in {}", snapshot.config_path),
             ))
     }
 }
 
-fn header(snapshot: &crate::model::Snapshot, pill_bg: u32, pill_fg: u32) -> gpui::Div {
+/// The app name and one word for how things are. The sentence under it is
+/// the latest status, or the problem to fix.
+fn header(snapshot: &Snapshot) -> gpui::Div {
+    let (colour, word) = match snapshot.tone {
+        Tone::Ready => (READY_FG, "Ready"),
+        Tone::Busy => (BUSY_FG, "Working"),
+        Tone::Problem => (BAD_FG, "Check"),
+    };
+    let problem = snapshot.tone == Tone::Problem;
     div()
         .flex()
         .flex_col()
         .gap_2()
         .px_4()
-        .pt_4()
+        .pt_3()
         .pb_3()
         .child(
             div()
@@ -1259,39 +1290,36 @@ fn header(snapshot: &crate::model::Snapshot, pill_bg: u32, pill_fg: u32) -> gpui
                 .justify_between()
                 .child(
                     div()
-                        .text_xl()
+                        .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("TapPrint"),
                 )
                 .child(
                     div()
-                        .px_2()
-                        .py_1()
-                        .rounded_md()
-                        .bg(rgb(READY_BG))
-                        .text_color(rgb(READY_FG))
-                        .text_xs()
-                        .child("Running locally"),
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(colour)))
+                        .child(div().text_xs().text_color(rgb(colour)).child(word)),
                 ),
         )
         .child(
             div()
                 .text_xs()
-                .text_color(rgb(MUTED))
-                .child("Your receipt printer, connected to your till."),
+                .when(problem, |line| {
+                    line.px_3()
+                        .py_2()
+                        .rounded_md()
+                        .bg(rgb(BAD_BG))
+                        .text_color(rgb(BAD_FG))
+                })
+                .when(!problem, |line| line.text_color(rgb(MUTED)))
+                .child(snapshot.status.clone()),
         )
-        .when(snapshot.tone != Tone::Ready, |view| {
-            view.child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(pill_bg))
-                    .text_color(rgb(pill_fg))
-                    .text_xs()
-                    .child(snapshot.status.clone()),
-            )
-        })
+}
+
+fn page() -> gpui::Div {
+    div().flex().flex_col().gap_3()
 }
 
 fn card() -> gpui::Div {
@@ -1299,11 +1327,26 @@ fn card() -> gpui::Div {
         .flex()
         .flex_col()
         .gap_2()
-        .p_3()
+        .px_3()
+        .py_2()
         .rounded_lg()
         .border_1()
         .border_color(rgb(SOFT))
         .bg(rgb(CARD))
+}
+
+/// One setting: its name on the left, its control on the right.
+fn row() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .min_h(px(36.))
+}
+
+fn divider() -> gpui::Div {
+    div().h(px(1.)).bg(rgb(SOFT))
 }
 
 fn label(text: &'static str) -> gpui::Div {
@@ -1314,18 +1357,26 @@ fn label(text: &'static str) -> gpui::Div {
         .child(text)
 }
 
-/// The name of one switch. Darker than a section label, so the row reads as
-/// something to act on.
-fn setting(text: &'static str) -> gpui::Div {
-    div()
-        .text_sm()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text)
-}
-
-/// Small grey help text under a heading.
+/// Small grey text.
 fn hint(text: impl Into<SharedString>) -> gpui::Div {
     div().text_xs().text_color(rgb(MUTED)).child(text.into())
+}
+
+/// A small rounded tag, green when it reports something good.
+fn pill(text: String, good: bool) -> gpui::Div {
+    let (background, foreground) = if good {
+        (READY_BG, READY_FG)
+    } else {
+        (PAPER, MUTED)
+    };
+    div()
+        .px_2()
+        .py(px(2.))
+        .rounded_full()
+        .bg(rgb(background))
+        .text_color(rgb(foreground))
+        .text_xs()
+        .child(text)
 }
 
 fn grouped_code(code: &str) -> String {
@@ -1339,14 +1390,27 @@ fn grouped_code(code: &str) -> String {
     grouped
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// The one thing to do next.
+    Primary,
+    Plain,
+    /// The second click of something that cannot be undone.
+    Danger,
+}
+
 fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
-    primary: bool,
+    kind: Kind,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     let label: SharedString = label.into();
-    let (background, foreground) = if primary { (INK, CARD) } else { (CARD, INK) };
+    let (background, foreground, edge, hover) = match kind {
+        Kind::Primary => (INK, CARD, INK, MUTED),
+        Kind::Plain => (CARD, INK, SOFT, PAPER),
+        Kind::Danger => (BAD_BG, BAD_FG, BAD_FG, BAD_BG),
+    };
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -1354,28 +1418,173 @@ fn button(
         .focusable()
         .tab_index(0)
         .on_click(on_click)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .h(px(32.))
         .px_3()
-        .py_2()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if primary { INK } else { SOFT }))
+        .border_color(rgb(edge))
         .bg(rgb(background))
         .text_color(rgb(foreground))
         .text_sm()
         .cursor_pointer()
-        .hover(move |style| style.bg(rgb(if primary { MUTED } else { PAPER })))
-        .active(|style| style.bg(rgb(MUTED)).text_color(rgb(CARD)))
+        .hover(move |style| style.bg(rgb(hover)))
+        .active(|style| style.opacity(0.7))
         .focus_visible(|style| style.border_color(rgb(READY_FG)))
         .child(label)
 }
 
-fn choice(
+/// A square button that shows only an icon. `label` is what a screen reader says.
+fn icon_button(
     id: impl Into<gpui::ElementId>,
-    label: impl Into<SharedString>,
+    icon: &'static [u8],
+    label: &'static str,
+    on: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .focusable()
+        .tab_index(0)
+        .on_click(on_click)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .w(px(28.))
+        .h(px(28.))
+        .rounded_full()
+        .border_1()
+        .border_color(hsla(0., 0., 0., 0.))
+        .cursor_pointer()
+        .when(on, |style| style.bg(rgb(SOFT)))
+        .hover(|style| style.bg(rgb(SOFT)))
+        .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        .child(
+            gpui::svg()
+                .data(icon)
+                .w(px(16.))
+                .h(px(16.))
+                .text_color(rgb(if on { INK } else { MUTED })),
+        )
+}
+
+/// The track that holds a set of segments: a choice of one among a few.
+fn segments() -> gpui::Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .p(px(3.))
+        .gap(px(2.))
+        .rounded_lg()
+        .bg(rgb(SOFT))
+}
+
+fn segment(
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
     selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    button(id, label, selected, on_click)
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .focusable()
+        .tab_index(0)
+        .on_click(on_click)
+        .flex()
+        .items_center()
+        .justify_center()
+        .h(px(28.))
+        .px_3()
+        .rounded_md()
+        .border_1()
+        .border_color(hsla(0., 0., 0., 0.))
+        .text_sm()
+        .cursor_pointer()
+        .when(selected, |style| {
+            style.bg(rgb(CARD)).font_weight(FontWeight::SEMIBOLD)
+        })
+        .when(!selected, |style| {
+            style
+                .text_color(rgb(MUTED))
+                .hover(|style| style.text_color(rgb(INK)))
+        })
+        .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        .child(label)
+}
+
+/// One of a list to pick from: a printer on USB, or one found on the network.
+fn option_row(
+    id: impl Into<gpui::ElementId>,
+    name: String,
+    selected: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(name.clone())
+        .focusable()
+        .tab_index(0)
+        .on_click(on_click)
+        .flex()
+        .items_center()
+        .gap_2()
+        .h(px(36.))
+        .px_2()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(if selected { READY_FG } else { SOFT }))
+        .when(selected, |style| style.bg(rgb(READY_BG)))
+        .cursor_pointer()
+        .hover(|style| style.bg(rgb(if selected { READY_BG } else { PAPER })))
+        .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(16.))
+                .h(px(16.))
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(if selected { READY_FG } else { MUTED }))
+                .when(selected, |dot| {
+                    dot.child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(READY_FG)))
+                }),
+        )
+        .child(div().flex_1().min_w_0().text_sm().truncate().child(name))
+        .when(selected, |style| {
+            style.child(div().text_xs().text_color(rgb(READY_FG)).child("In use"))
+        })
+}
+
+/// The shared look of a text field.
+fn field(
+    input: gpui_ce_elements::editable_text::EditableTextElement,
+    placeholder: &'static str,
+) -> gpui_ce_elements::editable_text::EditableTextElement {
+    input
+        .placeholder(placeholder)
+        .placeholder_color(rgb(MUTED))
+        .caret_color(gpui::black())
+        .selection_color(hsla(0.58, 0.28, 0.72, 0.7))
+        .caret_blink_interval_500ms()
+        .h(px(32.))
+        .px_2()
+        .py(px(5.))
+        .bg(rgb(PAPER))
+        .border_1()
+        .border_color(rgb(SOFT))
+        .rounded_md()
+        .text_sm()
 }
 
 fn toggle(
@@ -1396,26 +1605,24 @@ fn toggle(
         .focusable()
         .tab_index(0)
         .on_click(on_click)
-        .h(px(44.))
-        .px_1()
         .flex()
+        .flex_shrink_0()
         .items_center()
         .cursor_pointer()
-        .rounded_md()
+        .rounded_full()
         .border_1()
-        .border_color(rgb(CARD))
+        .border_color(hsla(0., 0., 0., 0.))
         .focus_visible(|style| style.border_color(rgb(READY_FG)))
-        .hover(|style| style.bg(rgb(PAPER)))
         .child(
             div()
-                .w(px(44.))
-                .h(px(26.))
+                .w(px(40.))
+                .h(px(24.))
                 .p(px(3.))
                 .rounded_full()
                 .flex()
                 .items_center()
                 .bg(rgb(if on { READY_FG } else { MUTED }))
                 .when(on, |track| track.justify_end())
-                .child(div().w(px(20.)).h(px(20.)).rounded_full().bg(rgb(CARD))),
+                .child(div().w(px(18.)).h(px(18.)).rounded_full().bg(rgb(CARD))),
         )
 }

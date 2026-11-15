@@ -280,7 +280,7 @@ export class TapPrint {
  */
 function unreachable(cause) {
   const error = new TapPrintError(
-    "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and choose Set up Safari.",
+    "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and set up Safari.",
     0,
     "unreachable",
   );

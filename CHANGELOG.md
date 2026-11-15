@@ -37,3 +37,5 @@ First public release.
 - The window has a **Cash drawer** setting for pin 2 or pin 5. It used to need a settings-file edit.
 - A failed USB scan says "Could not look for USB printers" instead of a bare error, and is no longer shown to a till that prints over the network.
 - Clearer wording in the window, and section headings in one style.
+- The window is redesigned: smaller, one screen per tab with no scrolling, switches and segmented choices in place of rows of buttons, and help text behind an (i) beside each setting.
+- **Find printers** looks for network printers, so nobody has to know an IP address. Choosing **Network** for the first time starts it, and one click on a result saves it.

@@ -6,7 +6,7 @@ The client reports reason `unreachable`.
 
 - **Is TapPrint running?** Look for its icon in the menu bar or system tray. `curl http://127.0.0.1:9240/v1/status` should answer.
 - **Chrome or Edge:** the browser asks once whether the site may reach apps on this device. If that was blocked, open the site settings (the icon left of the address) and allow it.
-- **Safari:** open TapPrint's **Settings** tab and choose **Set up Safari**. Safari only works on a Mac.
+- **Safari:** open TapPrint's **Settings** tab and click **Set up** beside **Safari**. Safari only works on a Mac.
 - **Inside an iframe:** a cross-origin till page needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
 
 ## TapPrint does not start
@@ -26,13 +26,14 @@ Open the **Printer** tab and click the right printer. With two of the same model
 
 ## The network printer does not print
 
-- On the **Printer** tab choose **Network**, type the address, and click **Use this address**. The port is usually 9100.
+- On the **Printer** tab choose **Network**. Click the printer TapPrint finds, or type its address and click **Save**. The port is usually 9100.
+- **Find printers** only looks at the 254 addresses beside this computer's own, on port 9100. A printer on another network segment, or on another port, has to be typed in.
 - Use the printer's IP address. A name that takes more than 5 seconds to look up fails the job.
-- Click **Print test slip**. The message at the top of the window says what went wrong.
+- Click **Print test**. The message at the top of the window says what went wrong.
 
 ## The cash drawer does not open
 
-On the **Printer** tab, under **Cash drawer**, try **Pin 5**, then click **Open drawer**. For a heavy drawer that needs a longer pulse, raise `drawer_on_ms` in the [settings file](api.md#settings-file).
+On the **Printer** tab, beside **Cash drawer**, choose **Pin 5**, then click **Open drawer**. For a heavy drawer that needs a longer pulse, raise `drawer_on_ms` in the [settings file](api.md#settings-file).
 
 ## The receipt looks wrong
 
