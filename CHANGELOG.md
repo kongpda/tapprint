@@ -39,3 +39,5 @@ First public release.
 - Clearer wording in the window, and section headings in one style.
 - The window is redesigned: smaller, one screen per tab with no scrolling, switches and segmented choices in place of rows of buttons, and help text behind an (i) beside each setting.
 - **Find printers** looks for network printers, so nobody has to know an IP address. Choosing **Network** for the first time starts it, and one click on a result saves it.
+- When TapPrint cannot be reached, the client says why if the browser tells: the page is not on HTTPS, the site's Content-Security-Policy blocks it, or the person blocked the site (`error.detail`).
+- New guide for going live on a real website (`docs/deploying.md`).

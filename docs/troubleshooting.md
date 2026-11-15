@@ -4,6 +4,7 @@
 
 The client reports reason `unreachable`.
 
+- **On a live site:** the page must be on HTTPS, and the site's Content-Security-Policy must allow TapPrint. See [Going live on a real website](deploying.md). The error's `detail` names the cause when the browser reveals it.
 - **Is TapPrint running?** Look for its icon in the menu bar or system tray. `curl http://127.0.0.1:9240/v1/status` should answer.
 - **Chrome or Edge:** the browser asks once whether the site may reach apps on this device. If that was blocked, open the site settings (the icon left of the address) and allow it.
 - **Safari:** open TapPrint's **Settings** tab and click **Set up** beside **Safari**. Safari only works on a Mac.

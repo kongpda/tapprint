@@ -56,6 +56,8 @@ What to do for the reasons a till page meets most:
 
 The full list is in the [HTTP API](../docs/api.md#errors).
 
+When the reason is `unreachable`, `error.detail` may say why: `insecure_page`, `blocked_by_csp`, or `permission_denied`. See [Going live on a real website](../docs/deploying.md).
+
 ## Browsers
 
 Chrome, Edge, and Firefox call TapPrint over plain `http://127.0.0.1`. Safari blocks that from an HTTPS page, so on a Mac TapPrint also answers over HTTPS on the next port (see the [HTTP API](../docs/api.md)). With `secure: "auto"` the client reads the status over plain HTTP first and over HTTPS second, and keeps the one that answered. Only that status read is tried twice. A print or a pairing request is sent once, to one address.

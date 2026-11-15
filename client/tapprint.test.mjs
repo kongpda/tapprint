@@ -160,6 +160,34 @@ test("an error reply carries its status and reason", async () => {
   await assert.rejects(till.status(), (error) => error.reason === "bad_response");
 });
 
+test("an unreachable TapPrint says why, when the browser can tell", async () => {
+  up = [];
+  // The site's own Content-Security-Policy refused the call.
+  const listeners = [];
+  globalThis.addEventListener = (name, listener) => listeners.push(listener);
+  const blocked = new TapPrint();
+  listeners.forEach((listener) => listener({ blockedURI: "http://127.0.0.1:9240" }));
+  await assert.rejects(blocked.status(), (error) => isUnreachable(error) && error.detail === "blocked_by_csp");
+  delete globalThis.addEventListener;
+
+  // A page on plain HTTP is never let through by Chrome.
+  globalThis.isSecureContext = false;
+  await assert.rejects(new TapPrint().status(), (error) => error.detail === "insecure_page" && /HTTPS/.test(error.message));
+  delete globalThis.isSecureContext;
+
+  // The person clicked Block when the browser asked.
+  const real = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { permissions: { query: async () => ({ state: "denied" }) } },
+  });
+  await assert.rejects(new TapPrint().status(), (error) => error.detail === "permission_denied");
+  Object.defineProperty(globalThis, "navigator", real);
+
+  // TapPrint is simply not running: no detail, the general message.
+  await assert.rejects(new TapPrint().status(), (error) => isUnreachable(error) && error.detail === undefined);
+});
+
 test("print refuses something that is not an image", async () => {
   await assert.rejects(new TapPrint({ code: "x" }).print({}), (error) => error.reason === "bad_request");
   assert.deepEqual(calls, []);

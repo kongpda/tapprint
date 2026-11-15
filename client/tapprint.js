@@ -3,6 +3,10 @@
 /**
  * Error thrown for every failed TapPrint call.
  * `status` is the HTTP status (0 when TapPrint could not be reached).
+ * `detail` says why TapPrint was unreachable, when the browser tells:
+ * "insecure_page" (the page is not on HTTPS), "blocked_by_csp" (the site's
+ * Content-Security-Policy forbids the call), or "permission_denied" (the
+ * person blocked the site from reaching apps on this device).
  * `reason` is the machine code from the API, such as "unauthorized",
  * "paper_out" or "maybe_printed", or "unreachable" / "bad_response".
  */
@@ -19,6 +23,8 @@ export class TapPrintError extends Error {
     this.status = status;
     /** @type {string} */
     this.reason = reason;
+    /** @type {"insecure_page"|"blocked_by_csp"|"permission_denied"|undefined} */
+    this.detail = undefined;
   }
 }
 
@@ -68,6 +74,15 @@ export class TapPrint {
     this.settled = this.candidates === null;
     /** A probe in flight, shared by calls made at the same time. @type {Promise<string>|null} */
     this.probing = null;
+    /** Set when the site's own Content-Security-Policy refused a call to TapPrint. */
+    this.cspBlocked = false;
+    try {
+      globalThis.addEventListener?.("securitypolicyviolation", (event) => {
+        if (/^https?:\/\/127\.0\.0\.1(:|\/|$)/.test(event.blockedURI || "")) this.cspBlocked = true;
+      });
+    } catch {
+      // No such event here (a worker or a test). The plain message is used.
+    }
     this.storageKey = storageKey;
     this.clientName = clientName;
     /** A code passed in the options. It belongs to the caller and is never forgotten. */
@@ -137,12 +152,43 @@ export class TapPrint {
             // Not reachable this way. Try the next one.
           }
         }
-        throw unreachable();
+        throw await this._unreachable();
       } finally {
         this.probing = null;
       }
     })();
     return this.probing;
+  }
+
+  /**
+   * The error for "no answer", with the cause when the browser reveals it.
+   * A blocked call and a stopped TapPrint look the same to `fetch`, so the
+   * three causes a site owner can fix are checked for by name.
+   * @param {unknown} [cause]
+   * @returns {Promise<TapPrintError>}
+   */
+  async _unreachable(cause) {
+    // The policy event arrives just after the failed call.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    /** @type {TapPrintError["detail"]} */
+    let detail;
+    let message =
+      "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and set up Safari.";
+    if (this.cspBlocked) {
+      detail = "blocked_by_csp";
+      message = `This site's Content-Security-Policy blocks TapPrint. Add ${(this.candidates ?? [this.base]).join(" and ")} to connect-src.`;
+    } else if (globalThis.isSecureContext === false) {
+      detail = "insecure_page";
+      message = "This page is not on HTTPS, so the browser will not let it reach TapPrint. Serve the page over HTTPS.";
+    } else if (await loopbackDenied()) {
+      detail = "permission_denied";
+      message =
+        "The browser has blocked this site from reaching apps on this device. Allow it in the site settings (the icon left of the address), then reload.";
+    }
+    const error = new TapPrintError(message, 0, "unreachable");
+    error.detail = detail;
+    if (cause !== undefined) error.cause = cause;
+    return error;
   }
 
   /**
@@ -164,7 +210,7 @@ export class TapPrint {
     } catch (cause) {
       // TapPrint may have been restarted or set up differently. Look again next time.
       if (this.candidates) this.settled = false;
-      throw unreachable(cause);
+      throw await this._unreachable(cause);
     }
     let body;
     try {
@@ -275,17 +321,21 @@ export class TapPrint {
 }
 
 /**
- * @param {unknown} [cause]
- * @returns {TapPrintError}
+ * Did the person block this site from reaching apps on this device? Chrome
+ * and Edge can say. The permission was renamed once, so both names are tried.
+ * @returns {Promise<boolean>}
  */
-function unreachable(cause) {
-  const error = new TapPrintError(
-    "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and set up Safari.",
-    0,
-    "unreachable",
-  );
-  if (cause !== undefined) error.cause = cause;
-  return error;
+async function loopbackDenied() {
+  for (const name of ["loopback-network", "local-network-access"]) {
+    try {
+      // @ts-ignore These names are newer than the DOM typings.
+      const status = await globalThis.navigator?.permissions?.query({ name });
+      if (status) return status.state === "denied";
+    } catch {
+      // This browser does not know the name. Try the next one.
+    }
+  }
+  return false;
 }
 
 /**

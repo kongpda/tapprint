@@ -31,6 +31,8 @@ await till.print(canvas, { drawer: true });
 
 Draw the canvas 512 px wide for 80 mm paper, or 360 px for 58 mm.
 
+Before going live, read [Going live on a real website](docs/deploying.md): the page must be on HTTPS.
+
 Safari needs one extra step: in TapPrint, open **Settings** and click **Set up** beside **Safari**.
 
 ## Security
@@ -40,6 +42,7 @@ TapPrint listens only on this computer. A site can print only after the person a
 ## Docs
 
 - [Browser client](client/README.md)
+- [Going live on a real website](docs/deploying.md)
 - [HTTP API](docs/api.md), for `curl` and servers
 - [Troubleshooting](docs/troubleshooting.md)
 - [Building from source](docs/building.md)

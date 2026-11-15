@@ -71,6 +71,11 @@ export class TapPrintError extends Error {
   /** HTTP status, or 0 when TapPrint could not be reached. */
   status: number;
   reason: TapPrintReason;
+  /**
+   * Why TapPrint was unreachable, when the browser tells. Unset when TapPrint
+   * is simply not running, and for every other reason.
+   */
+  detail?: "insecure_page" | "blocked_by_csp" | "permission_denied";
 }
 
 export class TapPrint {
