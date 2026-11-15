@@ -34,7 +34,7 @@ What it does not defend against:
 
 ## Known issues in dependencies
 
-Checked with `cargo audit` on 27 October 2026. CI runs it on every push.
+Checked with `cargo audit` on 15 November 2026. CI runs it on every push.
 
 - **tiny_http 0.12 request smuggling (CVE-2026-66752).** tiny_http mishandles `Transfer-Encoding: chunked`, and no fixed release exists. TapPrint refuses any request that has a `Transfer-Encoding` header, so the faulty code never runs. Browsers send `Content-Length` for `fetch` bodies.
 - **libusb 1.0.27 denial of service (CVE-2026-47104, CVE-2026-23679).** TapPrint builds libusb from the source bundled in `libusb1-sys` 0.7.0, and that version is 1.0.27. libusb 1.0.30 fixes both issues. To trigger either one, an attacker must plug a malicious USB device into the till, and the worst result is a crash. TapPrint will move to a fixed libusb when `libusb1-sys` ships one.
