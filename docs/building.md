@@ -58,7 +58,19 @@ Windows builds want Authenticode, not this certificate. An unsigned exe shows Sm
 
 ## Linux USB notes
 
-The udev rule in the README matches any USB printer by its interface class. If your system does not set `ID_USB_INTERFACES`, match one printer by ID instead. Find the ID with `lsusb` (for example `04b8:0202`):
+USB printers need a udev rule. Create `/etc/udev/rules.d/70-tapprint.rules`. The number must be below 73, so the `uaccess` tag takes effect:
+
+```
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:07????:*", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+```
+
+Reload the rules and plug the printer in again:
+
+```shell
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+The rule matches any USB printer by its interface class. If your system does not set `ID_USB_INTERFACES`, match one printer by ID instead. Find the ID with `lsusb` (for example `04b8:0202`):
 
 ```
 SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="0202", MODE="0660", GROUP="plugdev", TAG+="uaccess"
@@ -71,3 +83,9 @@ sudo usermod -aG plugdev "$USER"
 ```
 
 The Linux kernel's `usblp` driver claims printer-class devices. TapPrint detaches it while it prints and gives it back after.
+
+## Printer setup notes
+
+If the system already has a print queue for a USB printer, remove it and plug the printer in again. On an Epson TM-T88V, Printer Class is a setting in the Feed-button menu.
+
+On Windows the printer must use the USB print driver Windows installs when it is plugged in (`usbprint`). A vendor driver, or a driver swapped to WinUSB with Zadig, hides it from TapPrint.
