@@ -23,10 +23,16 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Not imported. Listed only for `vendored`, so rusb links a bundled libusb
 # and the till needs no Homebrew or system package.
 libusb1-sys = { version = "0.7", features = ["vendored"] }
+# Verifies the signature on an update before it is installed.
+minisign-verify = "0.3"
 rusb = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The checksum of a downloaded update.
+sha2 = "0.10"
 tiny_http = "0.12"
+# Asks GitHub for the latest release and downloads it. rustls, so no OpenSSL.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # Local HTTPS for Safari. tiny_http's own rustls is too old (known advisories),
 # so TapPrint terminates TLS itself and forwards to the plain listener.

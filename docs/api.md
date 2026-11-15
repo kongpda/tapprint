@@ -147,7 +147,7 @@ Render Khmer and any QR code into the PNG. The printer has no Khmer code page.
 | Windows | `%APPDATA%\TapPrint\config.json` |
 | Linux | `$XDG_CONFIG_HOME/tapprint/config.json` |
 
-Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `https_only` (false), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
+Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `https_only` (false), `check_updates` (true), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
 
 On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs setting up again.
 

@@ -48,6 +48,24 @@ GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-w
 
 The Release workflow builds macOS (universal), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release. The builds are not signed; see "Signing a Mac build" in [docs/building.md](docs/building.md).
 
+## Signing updates
+
+TapPrint checks GitHub Releases once a day and offers a newer version in its window. It installs one itself only when the release's `SHA256SUMS` is signed with the key in `release/update-key.pub`. Until that file holds a key, the window offers the download page instead.
+
+Set it up once, with [minisign](https://jedisct1.github.io/minisign/):
+
+```shell
+minisign -G -W -f -p release/update-key.pub -s tapprint-update.key
+```
+
+1. Commit `release/update-key.pub`. It is built into every copy from then on.
+2. In the repository on GitHub, open **Settings > Secrets and variables > Actions** and add a secret named `MINISIGN_SECRET_KEY`. Its value is the whole content of `tapprint-update.key`.
+3. Keep `tapprint-update.key` somewhere safe and offline, and never commit it. Whoever holds it can sign an update that every till will install.
+
+The Release workflow then signs each release and checks the signature against the committed key. `-W` makes a key with no password, which the workflow needs.
+
+If the key is lost, make a new one the same way. Copies built with the old key cannot verify releases signed with the new one, so those tills must be updated by hand once.
+
 ## Hardware reports
 
 If you test a printer model, tell us the model, how it connects, and the OS. Open an issue with the bug report template.

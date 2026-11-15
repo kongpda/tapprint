@@ -79,10 +79,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path target\release\tapprint.exe,LICENSE,README.md -DestinationPath dist\TapPrint-windows-x86_64.zip
+          # The bare program, which a running TapPrint downloads to update itself.
+          Copy-Item target\release\tapprint.exe dist\tapprint-windows-x86_64.exe
       - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: dist/TapPrint-windows-x86_64.zip
+          path: |
+            dist/TapPrint-windows-x86_64.zip
+            dist/tapprint-windows-x86_64.exe
 
   linux:
     needs: check
@@ -104,13 +108,17 @@ jobs:
       - run: cargo build --release --locked
       - name: Package
         run: |
-          mkdir -p dist/tapprint-linux-x86_64
-          cp target/release/tapprint LICENSE README.md dist/tapprint-linux-x86_64/
-          tar -C dist -czf dist/TapPrint-linux-x86_64.tar.gz tapprint-linux-x86_64
+          mkdir -p dist/pkg/tapprint-linux-x86_64
+          cp target/release/tapprint LICENSE README.md dist/pkg/tapprint-linux-x86_64/
+          tar -C dist/pkg -czf dist/TapPrint-linux-x86_64.tar.gz tapprint-linux-x86_64
+          # The bare program, which a running TapPrint downloads to update itself.
+          cp target/release/tapprint dist/tapprint-linux-x86_64
       - uses: actions/upload-artifact@v7
         with:
           name: linux
-          path: dist/TapPrint-linux-x86_64.tar.gz
+          path: |
+            dist/TapPrint-linux-x86_64.tar.gz
+            dist/tapprint-linux-x86_64
 
   release:
     needs: [macos, windows, linux]
@@ -118,6 +126,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -125,6 +136,27 @@ jobs:
       - name: Checksums
         working-directory: artifacts
         run: sha256sum * > SHA256SUMS
+      # TapPrint only installs an update whose checksums carry this
+      # signature. Without the secret the release still works: the app then
+      # shows the download page instead of updating itself.
+      - name: Sign the checksums
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        if: env.MINISIGN_SECRET_KEY != ''
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          # The version is signed too, so an old release cannot be passed
+          # off as a newer one.
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m artifacts/SHA256SUMS \
+            -t "tapprint ${GITHUB_REF_NAME#v}"
+          rm -f "$RUNNER_TEMP/minisign.key"
+          # The key in the repository is the one built into the app. A
+          # signature it rejects would leave every till unable to update.
+          minisign -V -p release/update-key.pub -m artifacts/SHA256SUMS
       - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*

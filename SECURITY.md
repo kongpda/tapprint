@@ -20,6 +20,7 @@ What it defends against:
 - **DNS rebinding.** The `Host` header must be `127.0.0.1` or `localhost`.
 - **Unwanted sites.** A site needs a code bound to its `Origin`, granted by the person at the till in the TapPrint window. Denied origins are blocked for 10 minutes, unanswered ones for 1 minute, and one pairing request waits at a time. After any refusal or timeout, no site can ask for 15 s. This slows a page that keeps asking, but does not stop it. The person at the till should close such a page. Each pairing issues a fresh code and revokes the old one.
 - **Sites on plain http.** A page served over `http://` can be altered on its way to the till. The pairing prompt says so in red for any http site that is not this computer. **Only secure websites** in Settings refuses such sites: they cannot pair, and codes they hold stop working. It is off by default, because some shops serve the till from an in-house http address.
+- **A forged update.** TapPrint asks GitHub once a day whether a newer release exists (this can be turned off in Settings) and never installs anything without a click. It installs only a download whose checksum is listed in a `SHA256SUMS` signed with the project's key, and the signature must name the exact version on offer, so an old release cannot be replayed as a new one. A copy built without the key does not install updates at all. It opens the download page.
 - **Printer reconfiguration.** Raw ESC/POS is off unless the person at the till turns it on.
 - **LAN scanning.** The page cannot choose the printer address. The window's **Find printers** does look for port 9100 on the addresses beside this computer's own, but only when the person at the till asks for it in the window, only on a private network, and no web page can start it or read its result.
 - **Timing attacks on codes.** Codes are compared in constant time.
@@ -28,6 +29,7 @@ What it defends against:
 
 What it does not defend against:
 
+- Whoever holds the update signing key. They can sign a release that tills will install when someone clicks Update.
 - Anyone with access to the till's user account, who can read the config file and the manual pairing code.
 - Malware running as the same user. It can talk to the loopback port. On macOS it can also read the certificate key and answer as `127.0.0.1` or `localhost` to this user's browsers, which gains it nothing it did not already have.
 - Programs on this computer faking `Origin`. Only browsers set `Origin` honestly. Any local program can send a pairing request in a known site's name, so the person at the till must still decide. The window warns when an already allowed site asks again.

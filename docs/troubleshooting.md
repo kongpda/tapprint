@@ -54,6 +54,13 @@ Reason `maybe_printed` means the printer stopped part way through. Part of the r
 
 The code is kept in the browser's `localStorage` for that site. Private windows, cleared site data, or a different browser profile lose it. Each new pairing also replaces the site's old code.
 
+## Updating
+
+- **The window says a version is ready.** Click **Update**. TapPrint downloads it, checks its signature, and restarts. Finish any receipt first.
+- **The button says Download, not Update.** This copy has no signing key built in, so it will not replace itself. The button opens the download page.
+- **"Could not write to …" on a Mac.** TapPrint is in a folder your account cannot change. Move it to `~/Applications`, or download the update by hand.
+- **No update is ever offered.** The till needs to reach `api.github.com`. To stop it asking, turn off **Check for updates** in Settings.
+
 ## Reporting a problem
 
 Open an issue with the bug report template. Include the output of `curl http://127.0.0.1:9240/v1/status`.

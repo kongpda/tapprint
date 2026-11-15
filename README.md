@@ -35,6 +35,10 @@ Before going live, read [Going live on a real website](docs/deploying.md): the p
 
 Safari needs one extra step: in TapPrint, open **Settings** and click **Set up** beside **Safari**.
 
+## Updates
+
+TapPrint looks for a new version once a day and shows it in the window. Click **Update** and it installs and restarts. It never updates by itself, so a sale is not interrupted.
+
 ## Security
 
 TapPrint listens only on this computer. A site can print only after the person at the till clicks **Allow**, and can be removed in the window at any time. Details are in [SECURITY.md](SECURITY.md).

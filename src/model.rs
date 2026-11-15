@@ -145,6 +145,8 @@ struct FileConfig {
     drawer_off_ms: u16,
     /// Refuse websites on plain http, except pages on this computer.
     https_only: bool,
+    /// Ask GitHub once a day whether a newer TapPrint exists.
+    check_updates: bool,
     sites: Vec<Site>,
 }
 
@@ -163,6 +165,7 @@ impl Default for FileConfig {
             drawer_on_ms: 50,
             drawer_off_ms: 50,
             https_only: false,
+            check_updates: true,
             sites: Vec::new(),
         }
     }
@@ -199,6 +202,9 @@ pub struct Snapshot {
     pub drawer_pin: u8,
     /// Only https websites, and pages on this computer, may print.
     pub https_only: bool,
+    pub check_updates: bool,
+    /// A newer release, once a check has found one.
+    pub update: Option<crate::update::Release>,
     /// Origins allowed to print with their own code.
     pub sites: Vec<String>,
     /// A site waiting for the cashier.
@@ -247,6 +253,7 @@ struct State {
     blocked: Vec<(String, Instant)>,
     /// No site may ask before this time. See `PROMPT_GAP`.
     quiet_until: Option<Instant>,
+    update: Option<crate::update::Release>,
 }
 
 struct PendingPair {
@@ -311,6 +318,7 @@ impl Shared {
                 pair_serial: 0,
                 blocked: Vec::new(),
                 quiet_until: None,
+                update: None,
             }),
             pair_answered: Condvar::new(),
             printing: Mutex::new(()),
@@ -361,6 +369,8 @@ impl Shared {
             ),
             drawer_pin: state.config.drawer_pin,
             https_only: state.config.https_only,
+            check_updates: state.config.check_updates,
+            update: state.update.clone(),
             sites: state
                 .config
                 .sites
@@ -501,7 +511,11 @@ impl Shared {
         state.printers.clear();
         // The scan ran, so the window stops saying it is still looking.
         state.listed = true;
-        if state.config.transport == Transport::Usb && state.tone != Tone::Busy {
+        // The scan repeats every second. It must not wipe out another
+        // problem the person has not read yet, such as a failed update.
+        let other_problem =
+            state.tone == Tone::Problem && !state.status.starts_with(USB_SCAN_FAILED);
+        if state.config.transport == Transport::Usb && state.tone != Tone::Busy && !other_problem {
             state.tone = Tone::Problem;
             state.status = format!("{USB_SCAN_FAILED} ({error}).");
         }
@@ -744,6 +758,28 @@ impl Shared {
             state.config.sites.retain(|site| site.origin != origin);
             state.tone = Tone::Ready;
             state.status = format!("{origin} can no longer print");
+        }
+        let _ = self.persist();
+    }
+
+    /// What the latest check found: a newer release, or none.
+    pub fn set_update(&self, update: Option<crate::update::Release>) {
+        self.lock().update = update;
+    }
+
+    pub fn set_check_updates(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.check_updates = on;
+            if !on {
+                state.update = None;
+            }
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "TapPrint will look for updates".to_string()
+            } else {
+                "TapPrint will not look for updates".to_string()
+            };
         }
         let _ = self.persist();
     }
@@ -1049,8 +1085,7 @@ fn config_path() -> PathBuf {
     config_root().join(folder).join("config.json")
 }
 
-/// The folder holding the settings file and the local certificate.
-#[cfg(target_os = "macos")]
+/// The folder holding the settings file and, on macOS, the local certificate.
 pub fn data_dir() -> PathBuf {
     let mut path = config_path();
     path.pop();
@@ -1286,6 +1321,14 @@ mod tests {
         // A scan that works again clears the message.
         shared.set_printers(Vec::new());
         assert_eq!(shared.snapshot().tone, Tone::Ready);
+
+        // Another problem on screen is not replaced by the repeating scan.
+        shared.set_status(Tone::Problem, "the update could not be installed");
+        shared.note_usb_error("access denied");
+        assert_eq!(
+            shared.snapshot().status,
+            "The update could not be installed"
+        );
 
         // A till on a network printer never hears about USB.
         shared.set_network("192.168.1.20", 9100).unwrap();

@@ -42,3 +42,5 @@ First public release.
 - When TapPrint cannot be reached, the client says why if the browser tells: the page is not on HTTPS, the site's Content-Security-Policy blocks it, or the person blocked the site (`error.detail`).
 - New guide for going live on a real website (`docs/deploying.md`).
 - The pairing prompt warns in red when the site is on plain http (other than this computer). A new **Only secure websites** switch refuses such sites (`403` `insecure_origin`). It is off by default.
+- Updates: TapPrint checks GitHub Releases once a day and shows a newer version in the window. **Update** downloads it, checks its signature, swaps it in and restarts. Nothing is installed without a click. **Check for updates** in Settings turns the check off.
+- Releases carry the bare program for Windows and Linux beside the archives, and a signed `SHA256SUMS` when the signing key is set up.

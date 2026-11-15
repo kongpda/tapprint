@@ -54,7 +54,18 @@ impl Drop for PrintSlot {
 
 pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
     let port = shared.snapshot().port;
-    let server = Server::http(format!("127.0.0.1:{port}")).map_err(|error| {
+    // Right after an update the old copy still holds the port for a moment.
+    let give_up = std::time::Instant::now() + crate::update::RESTART_WAIT;
+    let waiting = crate::update::restarting(&crate::model::data_dir());
+    let server = loop {
+        match Server::http(format!("127.0.0.1:{port}")) {
+            Err(_) if waiting && std::time::Instant::now() < give_up => {
+                thread::sleep(Duration::from_millis(250));
+            }
+            other => break other,
+        }
+    };
+    let server = server.map_err(|error| {
         format!(
             "Port {port} on this computer is already in use ({error}). TapPrint, or the older Receipt Till, may already be running: look for it in the menu bar or the system tray. Quit it, then open TapPrint again."
         )
@@ -699,6 +710,8 @@ mod tests {
             drawer: [0x1b, 0x70, 0, 25, 25],
             drawer_pin: 2,
             https_only: false,
+            check_updates: true,
+            update: None,
             sites: vec!["https://shop.example".to_string()],
             pair_request: None,
         };

@@ -33,7 +33,7 @@ pub fn refresh() {
 
 /// `/Applications/TapPrint.app` when running from a bundle, else the binary.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn app_bundle(program: &Path) -> Option<PathBuf> {
+pub fn app_bundle(program: &Path) -> Option<PathBuf> {
     let macos = program.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;

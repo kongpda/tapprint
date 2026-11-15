@@ -459,6 +459,7 @@ const HELP_SITES: &str =
     "When your till page asks to print, it appears at the top of this window for you to allow.";
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
 const HELP_HTTPS: &str = "Refuses websites that are not on https. Pages on this computer still work. Leave it off only if your till runs from an http address.";
+const HELP_UPDATES: &str = "Asks GitHub once a day whether a newer TapPrint exists. Nothing is installed until you click Update.";
 const HELP_CODE: &str = "For curl, servers, and kiosks. It works from any program on this computer, so keep it private. Websites do not need it.";
 const HELP_PAIR_NEW: &str = "It will be able to print and open the drawer. The address above is the one thing a page cannot fake. If unsure, choose Don't allow.";
 const HELP_PAIR_KNOWN: &str = "This site can already print, so it should not need to ask. Allow only if you just cleared its browser or set the till up again. Its old code stops working.";
@@ -482,6 +483,8 @@ struct TillView {
     /// The help note that is open, by the name of its (i).
     help: Option<&'static str>,
     search: Search,
+    /// An update is being downloaded and put in place.
+    updating: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -510,6 +513,7 @@ impl TillView {
             autostart: crate::autostart::enabled(),
             help: None,
             search: Search::Idle,
+            updating: false,
             _subscriptions: subscriptions,
         }
     }
@@ -649,6 +653,82 @@ impl TillView {
         self.save_network(cx);
     }
 
+    /// Download the update, check it, swap it in, start it, and quit. The
+    /// running copy keeps printing until the new one is in place.
+    fn install_update(&mut self, release: crate::update::Release, cx: &mut Context<Self>) {
+        if self.updating {
+            return;
+        }
+        if self.shared.printer_busy() {
+            self.shared
+                .set_status(Tone::Problem, "Wait for the receipt to finish, then update");
+            self.pull(cx);
+            return;
+        }
+        self.updating = true;
+        self.shared
+            .set_status(Tone::Busy, format!("Getting version {}", release.version));
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let program = crate::update::install(&release, &crate::model::data_dir())?;
+                    crate::update::start(&program)
+                })
+                .await;
+            match result {
+                Ok(()) => {
+                    cx.update(|cx| quit(&Quit, cx));
+                }
+                Err(error) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.updating = false;
+                        view.shared.set_status(Tone::Problem, error);
+                        view.pull(cx);
+                    });
+                }
+            }
+        })
+        .detach();
+        self.pull(cx);
+    }
+
+    /// Shown while a newer release is waiting. One click installs it, or
+    /// opens the download page when this copy cannot check a signature.
+    fn update_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> Option<gpui::Div> {
+        let release = snapshot.update.clone()?;
+        let can_install = crate::update::can_install();
+        let line = row().child(
+            div()
+                .text_sm()
+                .child(format!("Version {} is ready", release.version)),
+        );
+        let line = if self.updating {
+            line.child(pill("Updating…".to_string(), true))
+        } else {
+            line.child(button(
+                "update-now",
+                if can_install { "Update" } else { "Download" },
+                Kind::Primary,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    if can_install {
+                        view.install_update(release.clone(), cx);
+                    } else {
+                        cx.open_url(&release.page);
+                    }
+                }),
+            ))
+        };
+        Some(
+            div().px_4().pb_3().child(
+                card()
+                    .border_color(rgb(READY_FG))
+                    .bg(rgb(READY_BG))
+                    .child(line),
+            ),
+        )
+    }
+
     /// The (i) beside a setting. It opens the note with the same name.
     fn info(&self, name: &'static str, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let open = self.help == Some(name);
@@ -734,6 +814,7 @@ impl Render for TillView {
             .text_color(rgb(INK))
             .child(header(&snapshot))
             .children(self.pair_card(cx, &snapshot))
+            .children(self.update_card(cx, &snapshot))
             .child(tabs)
             .child(
                 div()
@@ -1181,6 +1262,21 @@ impl TillView {
                 .children(self.note("safari", HELP_SAFARI));
         }
         switches = switches
+            .child(divider())
+            .child(
+                row()
+                    .child(self.named("Check for updates", "updates", cx))
+                    .child(toggle(
+                        "updates-toggle",
+                        "Check for updates",
+                        snapshot.check_updates,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.shared.set_check_updates(!view.snapshot.check_updates);
+                            view.pull(cx);
+                        }),
+                    )),
+            )
+            .children(self.note("updates", HELP_UPDATES))
             .child(divider())
             .child(
                 row()
