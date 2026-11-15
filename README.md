@@ -289,7 +289,7 @@ The script draws the icon and ad-hoc signs the bundle so this Mac can launch it.
 ```shell
 sudo apt-get install pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
   libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
-  libssl-dev libudev-dev libasound2-dev libzstd-dev
+  libudev-dev
 cargo build --release
 ```
 

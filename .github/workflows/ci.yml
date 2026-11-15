@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets a branch be checked on all three systems before a pull request exists.
+  workflow_dispatch:
 
 # A newer push to the same branch or PR cancels the older run.
 concurrency:
@@ -17,8 +19,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: fmt and clippy
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -26,19 +28,37 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Each system compiles different files (`tls.rs` on macOS, `usb/windows.rs`
+  # on Windows), so clippy runs on all three.
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
-            libssl-dev libudev-dev libasound2-dev libzstd-dev
+            libudev-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
       # The "future incompatibility" note from a dependency is not a warning
       # in this crate, so -D warnings does not fail on it.
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -59,9 +79,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
-            libssl-dev libudev-dev libasound2-dev libzstd-dev
+            libudev-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+      # The bundle script is what a release runs. Building the app here, from
+      # the debug binary, catches a broken script before a tag is pushed.
+      - name: Bundle TapPrint.app
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --locked
+          TAPPRINT_BINARY=target/debug/tapprint scripts/macos-app.sh
+          plutil -lint dist/TapPrint.app/Contents/Info.plist
+          codesign --verify --verbose dist/TapPrint.app
 
   audit:
     name: security audit
@@ -70,8 +99,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-audit --locked
+      # A ready-made binary. Building cargo-audit from source took minutes.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       # Known advisories in dependencies fail the build. "Unmaintained"
       # warnings (all from gpui) do not.
       - run: cargo audit

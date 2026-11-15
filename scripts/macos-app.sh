@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds dist/TapPrint.app. The Dock icon is the ink tile from
+# Builds dist/TapPrint.app. Set TAPPRINT_BINARY to bundle a binary that is
+# already built (the release workflow passes a universal one). The Dock icon is the ink tile from
 # scripts/draw-macos-icon.swift, and the window opens in front. A small
 # receipt mark also goes in the menu bar when the bar has room. The ad-hoc
 # signature lets this Mac open the app. Other Macs need the Developer ID
@@ -17,15 +18,20 @@ if [ -z "$version" ]; then
     exit 1
 fi
 
-cargo build --release --locked --manifest-path "$root/Cargo.toml"
-
-target_dir=${CARGO_TARGET_DIR:-$root/target}
-binary=$target_dir/release/tapprint
+# A release build hands in its own universal binary. Without one, build here.
+if [ -n "${TAPPRINT_BINARY:-}" ]; then
+    binary=$TAPPRINT_BINARY
+else
+    cargo build --release --locked --manifest-path "$root/Cargo.toml"
+    target_dir=${CARGO_TARGET_DIR:-$root/target}
+    binary=$target_dir/release/tapprint
+fi
 if [ ! -x "$binary" ]; then
-    echo "tapprint: release binary missing at $binary" >&2
+    echo "tapprint: no binary at $binary" >&2
     exit 1
 fi
 
+mkdir -p "$root/dist"
 iconset=$root/dist/AppIcon.iconset
 rm -rf "$iconset"
 swift "$root/scripts/draw-macos-icon.swift" "$iconset"
@@ -67,6 +73,8 @@ cat > "$app/Contents/Info.plist" <<EOF
 	<string>13.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>TapPrint sends receipts to the network printer you chose.</string>
 </dict>
 </plist>
 EOF

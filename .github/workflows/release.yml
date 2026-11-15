@@ -47,44 +47,18 @@ jobs:
         run: |
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
-      # These steps replicate scripts/macos-app.sh, but with a universal binary.
+      # One bundle recipe for local builds, CI, and releases.
       - name: Bundle TapPrint.app
         run: |
           set -eu
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
           mkdir -p dist
           lipo -create -output dist/tapprint \
             target/aarch64-apple-darwin/release/tapprint \
             target/x86_64-apple-darwin/release/tapprint
-          swift scripts/draw-macos-icon.swift dist/AppIcon.iconset
-          iconutil --convert icns --output dist/AppIcon.icns dist/AppIcon.iconset
-          app=dist/TapPrint.app
-          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          cp dist/tapprint "$app/Contents/MacOS/tapprint"
-          cp dist/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
-          chmod 755 "$app/Contents/MacOS/tapprint"
-          cat > "$app/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleDevelopmentRegion</key><string>en</string>
-            <key>CFBundleDisplayName</key><string>TapPrint</string>
-            <key>CFBundleExecutable</key><string>tapprint</string>
-            <key>CFBundleIconFile</key><string>AppIcon</string>
-            <key>CFBundleIdentifier</key><string>com.khable.tapprint</string>
-            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-            <key>CFBundleName</key><string>TapPrint</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${version}</string>
-            <key>CFBundleVersion</key><string>${version}</string>
-            <key>LSMinimumSystemVersion</key><string>13.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict>
-          </plist>
-          PLIST
-          codesign --force --sign - "$app"
-          ditto -c -k --keepParent "$app" dist/TapPrint-macos-universal.zip
+          chmod 755 dist/tapprint
+          TAPPRINT_BINARY=dist/tapprint scripts/macos-app.sh
+          lipo -archs dist/TapPrint.app/Contents/MacOS/tapprint
+          ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint-macos-universal.zip
       - uses: actions/upload-artifact@v7
         with:
           name: macos
@@ -125,7 +99,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
-            libssl-dev libudev-dev libasound2-dev libzstd-dev
+            libudev-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Package
