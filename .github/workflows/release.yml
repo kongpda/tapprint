@@ -2,8 +2,8 @@ name: Release
 
 # Pushing a tag such as v0.1.0 builds all platforms and creates a GitHub
 # Release. The artifacts are UNSIGNED: the macOS app has an ad-hoc signature
-# only, and the Windows exe has no Authenticode signature. See the README
-# "Signing a Mac build" section for how to sign a build yourself.
+# only, and the Windows exe has no Authenticode signature. See the
+# "Signing a Mac build" section of docs/building.md for how to sign a build yourself.
 
 on:
   push:

@@ -4,7 +4,7 @@
 # scripts/draw-macos-icon.swift, and the window opens in front. A small
 # receipt mark also goes in the menu bar when the bar has room. The ad-hoc
 # signature lets this Mac open the app. Other Macs need the Developer ID
-# steps in the README.
+# steps in docs/building.md.
 set -eu
 
 [ "$(uname -s)" = Darwin ] || { echo "tapprint: macOS is required" >&2; exit 1; }
