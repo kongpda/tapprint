@@ -204,6 +204,11 @@ fn pair_failure(error: &PairError) -> (u16, String, &'static str) {
             "only http and https pages can pair".to_string(),
             "bad_request",
         ),
+        PairError::Insecure => (
+            403,
+            "this till only allows secure (https) websites. Serve the page over https.".to_string(),
+            "insecure_origin",
+        ),
         PairError::Denied => (
             403,
             "the cashier did not allow this site".to_string(),
@@ -693,6 +698,7 @@ mod tests {
             allow_raw: false,
             drawer: [0x1b, 0x70, 0, 25, 25],
             drawer_pin: 2,
+            https_only: false,
             sites: vec!["https://shop.example".to_string()],
             pair_request: None,
         };

@@ -50,6 +50,8 @@ export type TapPrintReason =
   | "unauthorized"
   /** `unpair()` was called with a code that is not this site's own. */
   | "not_paired"
+  /** The page is on plain http and this till only allows https websites. */
+  | "insecure_origin"
   | "pair_denied"
   | "pair_timeout"
   | "pair_busy"

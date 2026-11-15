@@ -18,6 +18,18 @@ They were checked with Chromium 153 loading the demo page from a non-local addre
 5. **In an iframe**, every `<iframe>` above the till page needs `allow="local-network-access; loopback-network"`.
 6. **Safari** works on a Mac after **Set up** beside **Safari** in TapPrint's Settings tab.
 
+## http and https
+
+TapPrint accepts both, and treats them differently:
+
+| The till page is on | What happens |
+| --- | --- |
+| `https://…` | Works. This is the normal case. |
+| `http://localhost` or `http://127.0.0.1` | Works. It is for development, and browsers treat it as secure. |
+| any other `http://…`, such as `http://192.168.1.10` | Chrome and Edge block it. In Firefox it can pair, and the TapPrint prompt warns that the site is not secure. |
+
+On plain http, someone on the same network can change the page before it reaches the till, and the changed page can print. If every till page you use is on https, turn on **Only secure websites** in TapPrint's Settings tab. An http site then gets `403` `insecure_origin` when it asks to pair, and a code it already holds stops working until the switch is turned off.
+
 ## What each till needs
 
 Each till runs its own TapPrint and pairs once. Nothing is shared between tills.

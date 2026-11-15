@@ -41,3 +41,4 @@ First public release.
 - **Find printers** looks for network printers, so nobody has to know an IP address. Choosing **Network** for the first time starts it, and one click on a result saves it.
 - When TapPrint cannot be reached, the client says why if the browser tells: the page is not on HTTPS, the site's Content-Security-Policy blocks it, or the person blocked the site (`error.detail`).
 - New guide for going live on a real website (`docs/deploying.md`).
+- The pairing prompt warns in red when the site is on plain http (other than this computer). A new **Only secure websites** switch refuses such sites (`403` `insecure_origin`). It is off by default.

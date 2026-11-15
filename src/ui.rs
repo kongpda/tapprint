@@ -458,6 +458,7 @@ const HELP_DRAWER: &str = "Most drawers use pin 2. If Open drawer does nothing, 
 const HELP_SITES: &str =
     "When your till page asks to print, it appears at the top of this window for you to allow.";
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
+const HELP_HTTPS: &str = "Refuses websites that are not on https. Pages on this computer still work. Leave it off only if your till runs from an http address.";
 const HELP_CODE: &str = "For curl, servers, and kiosks. It works from any program on this computer, so keep it private. Websites do not need it.";
 const HELP_PAIR_NEW: &str = "It will be able to print and open the drawer. The address above is the one thing a page cannot fake. If unsure, choose Don't allow.";
 const HELP_PAIR_KNOWN: &str = "This site can already print, so it should not need to ask. Allow only if you just cleared its browser or set the till up again. Its old code stops working.";
@@ -781,6 +782,18 @@ impl TillView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(request.origin),
                     )
+                    .when(request.insecure, |card| {
+                        card.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(rgb(BAD_BG))
+                                .text_color(rgb(BAD_FG))
+                                .text_xs()
+                                .child("Not a secure (https) site. Someone on its network could alter the page."),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -1168,6 +1181,21 @@ impl TillView {
                 .children(self.note("safari", HELP_SAFARI));
         }
         switches = switches
+            .child(divider())
+            .child(
+                row()
+                    .child(self.named("Only secure websites", "https", cx))
+                    .child(toggle(
+                        "https-toggle",
+                        "Only allow secure (https) websites",
+                        snapshot.https_only,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.shared.set_https_only(!view.snapshot.https_only);
+                            view.pull(cx);
+                        }),
+                    )),
+            )
+            .children(self.note("https", HELP_HTTPS))
             .child(divider())
             .child(
                 row()

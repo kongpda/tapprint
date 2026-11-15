@@ -10,6 +10,10 @@ The client reports reason `unreachable`.
 - **Safari:** open TapPrint's **Settings** tab and click **Set up** beside **Safari**. Safari only works on a Mac.
 - **Inside an iframe:** a cross-origin till page needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
 
+## Pairing fails with `insecure_origin`
+
+**Only secure websites** is on in TapPrint's Settings tab and the till page is on plain `http://`. Serve the page over https, or turn the switch off.
+
 ## TapPrint does not start
 
 A dialog says why. The usual cause is "Port 9240 is already in use": another copy is running. Quit it from the menu bar or tray, then open TapPrint again.

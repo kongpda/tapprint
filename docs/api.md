@@ -20,6 +20,7 @@ Chrome 142 and later ask once per site before a page can reach apps on this comp
 | 401 | `unauthorized` | Missing, wrong, or removed code. |
 | 401 | `not_paired` | `/v1/unpair` with a code that is not this site's own. |
 | 403 | `raw_disabled` | Raw ESC/POS sent while **Raw printer commands** is off. |
+| 403 | `insecure_origin` | `/v1/pair` from a plain `http://` site while **Only secure websites** is on. |
 | 403 | `pair_denied` | The person at the till clicked **Don't allow**. |
 | 404 | `not_found` | Unknown path. |
 | 408 | `pair_timeout` | Nobody answered within 120 s. |
@@ -146,7 +147,7 @@ Render Khmer and any QR code into the PNG. The printer has no Khmer code page.
 | Windows | `%APPDATA%\TapPrint\config.json` |
 | Linux | `$XDG_CONFIG_HOME/tapprint/config.json` |
 
-Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
+Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `https_only` (false), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
 
 On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs setting up again.
 

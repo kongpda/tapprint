@@ -66,6 +66,8 @@ impl JobError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairError {
     BadOrigin,
+    /// The site is on plain http and this till only allows https sites.
+    Insecure,
     Busy,
     Blocked,
     Denied,
@@ -141,6 +143,8 @@ struct FileConfig {
     drawer_pin: u8,
     drawer_on_ms: u16,
     drawer_off_ms: u16,
+    /// Refuse websites on plain http, except pages on this computer.
+    https_only: bool,
     sites: Vec<Site>,
 }
 
@@ -158,6 +162,7 @@ impl Default for FileConfig {
             drawer_pin: 2,
             drawer_on_ms: 50,
             drawer_off_ms: 50,
+            https_only: false,
             sites: Vec::new(),
         }
     }
@@ -192,6 +197,8 @@ pub struct Snapshot {
     pub drawer: [u8; 5],
     /// The printer connector pin the drawer is wired to: 2 or 5.
     pub drawer_pin: u8,
+    /// Only https websites, and pages on this computer, may print.
+    pub https_only: bool,
     /// Origins allowed to print with their own code.
     pub sites: Vec<String>,
     /// A site waiting for the cashier.
@@ -207,6 +214,8 @@ pub struct PairRequest {
     pub client: String,
     /// The origin can already print. A second request is unusual, so the window warns.
     pub known: bool,
+    /// The site is on plain http, so someone on its network could alter the page.
+    pub insecure: bool,
     /// Whole seconds until the page stops waiting.
     pub seconds_left: u64,
 }
@@ -351,6 +360,7 @@ impl Shared {
                 state.config.drawer_off_ms,
             ),
             drawer_pin: state.config.drawer_pin,
+            https_only: state.config.https_only,
             sites: state
                 .config
                 .sites
@@ -370,6 +380,7 @@ impl Shared {
                         .sites
                         .iter()
                         .any(|site| site.origin == pending.origin),
+                    insecure: insecure_origin(&pending.origin),
                     seconds_left: pending
                         .deadline
                         .saturating_duration_since(Instant::now())
@@ -591,6 +602,9 @@ impl Shared {
         let Some(origin) = origin.and_then(normalized_origin) else {
             return false;
         };
+        if state.config.https_only && insecure_origin(&origin) {
+            return false;
+        }
         state
             .config
             .sites
@@ -609,6 +623,9 @@ impl Shared {
         let origin = normalized_origin(origin).ok_or(PairError::BadOrigin)?;
         let deadline = Instant::now() + wait;
         let mut state = self.lock();
+        if state.config.https_only && insecure_origin(&origin) {
+            return Err(PairError::Insecure);
+        }
         let now = Instant::now();
         state.blocked.retain(|(_, until)| *until > now);
         if state.blocked.iter().any(|(blocked, _)| *blocked == origin)
@@ -727,6 +744,22 @@ impl Shared {
             state.config.sites.retain(|site| site.origin != origin);
             state.tone = Tone::Ready;
             state.status = format!("{origin} can no longer print");
+        }
+        let _ = self.persist();
+    }
+
+    /// With this on, a website on plain http can neither pair nor print.
+    /// Pages on this computer are not affected.
+    pub fn set_https_only(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.https_only = on;
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "Only secure (https) websites may print".to_string()
+            } else {
+                "Websites on http may print too".to_string()
+            };
         }
         let _ = self.persist();
     }
@@ -888,6 +921,27 @@ fn normalized_origin(origin: &str) -> Option<String> {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'));
     allowed.then_some(origin)
+}
+
+/// A normalized origin on plain http that is not this computer. Browsers
+/// treat `http://localhost` as secure, because it never leaves the machine.
+/// Anywhere else, http lets someone on the network change the page.
+fn insecure_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = match rest.strip_prefix('[') {
+        // `[::1]:3000`
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => rest.split(':').next().unwrap_or_default(),
+    };
+    let local = host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback());
+    !local
 }
 
 fn pairing_code() -> Result<String, String> {
@@ -1359,6 +1413,67 @@ mod tests {
         assert!(reloaded.authorize(Some("https://shop.example"), &code));
         reloaded.remove_site("https://shop.example");
         assert!(!reloaded.authorize(Some("https://shop.example"), &code));
+    }
+
+    #[test]
+    fn plain_http_is_insecure_except_on_this_computer() {
+        for origin in [
+            "http://192.168.1.10",
+            "http://till.local:8080",
+            "http://shop.example",
+            "http://localhost.evil.example",
+        ] {
+            assert!(insecure_origin(origin), "{origin}");
+        }
+        for origin in [
+            "https://shop.example",
+            "http://localhost",
+            "http://localhost:3000",
+            "http://app.localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://[::1]:3000",
+        ] {
+            assert!(!insecure_origin(origin), "{origin}");
+        }
+    }
+
+    #[test]
+    fn an_http_site_is_flagged_and_can_be_shut_out() {
+        // Some shops run the till from an in-house http server, so http is
+        // allowed by default. The prompt says so, and one switch refuses it.
+        let shared = std::sync::Arc::new(Shared::load_from(isolated("http-site"), None).unwrap());
+        let watcher = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    if let Some(request) = shared.snapshot().pair_request {
+                        shared.answer_pair(request.serial, true);
+                        return request.insecure;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("no pairing request showed up");
+            })
+        };
+        let code = shared
+            .request_pair("http://192.168.1.10", "x", Duration::from_secs(5))
+            .unwrap();
+        assert!(watcher.join().unwrap(), "the prompt did not flag http");
+        assert!(shared.authorize(Some("http://192.168.1.10"), &code));
+
+        shared.set_https_only(true);
+        // The code it already holds stops working, and it cannot ask again.
+        assert!(!shared.authorize(Some("http://192.168.1.10"), &code));
+        assert_eq!(
+            shared.request_pair("http://192.168.1.10", "x", Duration::from_secs(5)),
+            Err(PairError::Insecure)
+        );
+        // Nobody was asked, so nothing is on screen.
+        assert!(shared.snapshot().pair_request.is_none());
+
+        // Turned off again, the same code works: nothing was thrown away.
+        shared.set_https_only(false);
+        assert!(shared.authorize(Some("http://192.168.1.10"), &code));
     }
 
     #[test]

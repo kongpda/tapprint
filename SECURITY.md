@@ -19,6 +19,7 @@ What it defends against:
 - **Other computers.** It listens on `127.0.0.1` only.
 - **DNS rebinding.** The `Host` header must be `127.0.0.1` or `localhost`.
 - **Unwanted sites.** A site needs a code bound to its `Origin`, granted by the person at the till in the TapPrint window. Denied origins are blocked for 10 minutes, unanswered ones for 1 minute, and one pairing request waits at a time. After any refusal or timeout, no site can ask for 15 s. This slows a page that keeps asking, but does not stop it. The person at the till should close such a page. Each pairing issues a fresh code and revokes the old one.
+- **Sites on plain http.** A page served over `http://` can be altered on its way to the till. The pairing prompt says so in red for any http site that is not this computer. **Only secure websites** in Settings refuses such sites: they cannot pair, and codes they hold stop working. It is off by default, because some shops serve the till from an in-house http address.
 - **Printer reconfiguration.** Raw ESC/POS is off unless the person at the till turns it on.
 - **LAN scanning.** The page cannot choose the printer address. The window's **Find printers** does look for port 9100 on the addresses beside this computer's own, but only when the person at the till asks for it in the window, only on a private network, and no web page can start it or read its result.
 - **Timing attacks on codes.** Codes are compared in constant time.
