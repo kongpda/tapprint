@@ -26,3 +26,10 @@ First public release.
 - The client reads the stored code on every call, so a code paired in another tab is used and is not wiped by an old one.
 - Safari support on macOS: TapPrint also answers on `https://127.0.0.1:9241` with its own loopback-only certificate. Settings > Set up Safari asks macOS to trust it. Chrome and Edge keep using plain HTTP. The HTTPS front uses rustls 0.23.
 - `POST /v1/unpair` lets a site drop its own pairing. The browser client has `unpair()`.
+- The browser client works in Safari: by default it tries plain HTTP, then the HTTPS port, and remembers which one answered. `secure: true` or `false` fixes the choice.
+- The HTTPS relay no longer polls. An idle Safari connection costs nothing, and replies are no longer held back by up to 40 ms.
+- A certificate and key that no longer fit together are replaced at start. The certificate no longer lists `::1`.
+- New `503` `printer_busy`: at most six receipts wait for the printer, so status and pairing stay answered while a printer stalls.
+- The window footer counts jobs, not receipts, because test slips and drawer pulses are counted too.
+- The Mac app says why it uses the local network (`NSLocalNetworkUsageDescription`), for the macOS 15 prompt when a network printer is used.
+- CI runs clippy on macOS, Windows, and Linux, builds the Mac bundle, and tests the browser client.

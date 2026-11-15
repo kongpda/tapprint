@@ -92,6 +92,16 @@ jobs:
           plutil -lint dist/TapPrint.app/Contents/Info.plist
           codesign --verify --verbose dist/TapPrint.app
 
+  client:
+    name: browser client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: node --check client/tapprint.js
+      - run: node --test client/tapprint.test.mjs
+
   audit:
     name: security audit
     runs-on: ubuntu-latest

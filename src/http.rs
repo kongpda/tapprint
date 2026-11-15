@@ -10,6 +10,7 @@
 use std::io::{Cursor, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -24,6 +25,32 @@ const PAIR_WAIT: Duration = Duration::from_secs(120);
 /// Enough that a status check is answered while prints queue behind a slow
 /// printer and a pairing request waits. Printer bytes still go out one job at a time.
 const WORKERS: usize = 8;
+/// Receipts that may wait for the printer at once. Each one holds a worker
+/// until the printer takes it, and a stalled printer holds a job for up to
+/// 20 s. The workers left over keep answering status, pairing and unpairing.
+const MAX_PRINTS: usize = WORKERS - 2;
+const _: () = assert!(MAX_PRINTS < WORKERS);
+
+static PRINTS: AtomicUsize = AtomicUsize::new(0);
+
+/// One place in the print queue, given back when the job ends.
+struct PrintSlot;
+
+impl PrintSlot {
+    fn take() -> Option<Self> {
+        if PRINTS.fetch_add(1, Ordering::AcqRel) >= MAX_PRINTS {
+            PRINTS.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for PrintSlot {
+    fn drop(&mut self) {
+        PRINTS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
     let port = shared.snapshot().port;
@@ -244,6 +271,16 @@ fn print(shared: &Shared, request: &mut Request) -> (StatusCode, Vec<u8>) {
         drawer: header(request, "x-drawer").is_some_and(|value| value == "1"),
         dither: header(request, "x-dither").is_some_and(|value| value == "1"),
     };
+    // Taken before the body is read, so a full queue costs the page nothing.
+    let Some(_slot) = PrintSlot::take() else {
+        return (
+            StatusCode(503),
+            error_json(
+                "the printer is busy with other receipts. Nothing was printed. Try again shortly.",
+                "printer_busy",
+            ),
+        );
+    };
     let mut body = Vec::new();
     if request
         .as_reader()
@@ -439,6 +476,188 @@ mod tests {
         let mut reply = [0u8; 12];
         client.read_exact(&mut reply).unwrap();
         assert_eq!(&reply, b"HTTP/1.1 400");
+    }
+
+    /// The real listener and workers on a free port, with fresh settings.
+    fn running(name: &str) -> (Arc<Shared>, u16) {
+        let dir = std::env::temp_dir().join(format!("tapprint-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(Shared::load_from(dir.join("config.json"), None).unwrap());
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        spawn_workers(server, &shared, port, name).unwrap();
+        (shared, port)
+    }
+
+    /// One HTTP call, as a browser would make it. Returns the status, the
+    /// header block in lowercase, and the JSON body.
+    fn call(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> (u16, String, serde_json::Value) {
+        use std::io::Write;
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client.write_all(request.as_bytes()).unwrap();
+        // The listener may answer and close before a large body is all sent.
+        let _ = client.write_all(body);
+        let mut reply = Vec::new();
+        let _ = client.read_to_end(&mut reply);
+        let reply = String::from_utf8_lossy(&reply).into_owned();
+        let (head, body) = reply.split_once("\r\n\r\n").unwrap_or((&reply, ""));
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0);
+        let json = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+        (status, head.to_ascii_lowercase(), json)
+    }
+
+    #[test]
+    fn a_site_pairs_prints_and_unpairs_over_http() {
+        // The whole path a till page takes, through the real listener.
+        let (shared, port) = running("flow");
+        let shop = ("Origin", "https://shop.example");
+
+        let (status, _, body) = call(port, "GET", "/v1/status", &[shop], b"");
+        assert_eq!(status, 200);
+        assert_eq!(body["paired"], false);
+        assert!(body.get("printers").is_none());
+
+        // The person at the till clicks Allow while the request waits.
+        let cashier = {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || {
+                for _ in 0..1_000 {
+                    if let Some(request) = shared.snapshot().pair_request {
+                        assert_eq!(request.origin, "https://shop.example");
+                        shared.answer_pair(request.serial, true);
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                panic!("no pairing request showed up");
+            })
+        };
+        let named = ("X-Till-Client", "MyShop");
+        let (status, _, body) = call(port, "POST", "/v1/pair", &[shop, named], b"");
+        cashier.join().unwrap();
+        assert_eq!(status, 200, "{body}");
+        let code = body["code"].as_str().unwrap().to_string();
+        let bearer = format!("Bearer {code}");
+        let auth = ("Authorization", bearer.as_str());
+
+        let (_, _, body) = call(port, "GET", "/v1/status", &[shop, auth], b"");
+        assert_eq!(body["paired"], true);
+        assert!(body["printers"].is_array());
+
+        // The code is the shop's. From any other site it is worth nothing.
+        let thief = ("Origin", "https://evil.example");
+        let png = ("Content-Type", "image/png");
+        let (status, _, body) = call(port, "POST", "/v1/print", &[thief, auth, png], b"x");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (401, Some("unauthorized"))
+        );
+        let (status, _, body) = call(port, "POST", "/v1/unpair", &[thief, auth], b"");
+        assert_eq!((status, body["reason"].as_str()), (401, Some("not_paired")));
+
+        // From the shop it is let in. These fail on the content, before any
+        // printer is touched.
+        let (status, _, body) = call(port, "POST", "/v1/print", &[shop, auth, png], b"not a png");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (400, Some("bad_request"))
+        );
+        let pdf = ("Content-Type", "application/pdf");
+        let (status, _, body) = call(port, "POST", "/v1/print", &[shop, auth, pdf], b"x");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (415, Some("unsupported_type"))
+        );
+        let raw = ("Content-Type", "application/vnd.escpos");
+        let (status, _, body) = call(port, "POST", "/v1/print", &[shop, auth, raw], b"x");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (403, Some("raw_disabled"))
+        );
+        let wide = ("X-Paper-Mm", "72");
+        let (status, _, _) = call(port, "POST", "/v1/print", &[shop, auth, png, wide], b"x");
+        assert_eq!(status, 400);
+        let huge = vec![0u8; MAX_BODY + 1];
+        let (status, _, body) = call(port, "POST", "/v1/print", &[shop, auth, png], &huge);
+        assert_eq!((status, body["reason"].as_str()), (413, Some("too_large")));
+
+        let (status, _, body) = call(port, "POST", "/v1/unpair", &[shop, auth], b"");
+        assert_eq!((status, &body["ok"]), (200, &serde_json::Value::Bool(true)));
+        let (status, _, _) = call(port, "POST", "/v1/print", &[shop, auth, png], b"x");
+        assert_eq!(status, 401);
+        assert!(shared.snapshot().sites.is_empty());
+    }
+
+    #[test]
+    fn a_browser_preflight_is_answered_and_strangers_are_turned_away() {
+        let (_shared, port) = running("edges");
+        // Chrome asks first, because the page sends headers of its own.
+        let (status, head, _) = call(port, "OPTIONS", "/v1/print", &[], b"");
+        assert_eq!(status, 204);
+        assert!(head.contains("access-control-allow-origin: *"));
+        assert!(head.contains("access-control-allow-private-network: true"));
+        for header in ["authorization", "content-type", "x-drawer", "x-till-client"] {
+            assert!(head.contains(header), "{header} is not allowed: {head}");
+        }
+
+        let (status, _, body) = call(port, "GET", "/v1/nothing", &[], b"");
+        assert_eq!((status, body["reason"].as_str()), (404, Some("not_found")));
+        // Pairing is for web pages. A program has the code in the window.
+        let (status, _, body) = call(port, "POST", "/v1/pair", &[], b"");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (400, Some("bad_request"))
+        );
+        let png = ("Content-Type", "image/png");
+        let (status, _, body) = call(port, "POST", "/v1/print", &[png], b"x");
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (401, Some("unauthorized"))
+        );
+
+        // A site that points its own name at this computer is refused.
+        use std::io::Write;
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            client,
+            "GET /v1/status HTTP/1.1\r\nHost: evil.example:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut reply = [0u8; 12];
+        client.read_exact(&mut reply).unwrap();
+        assert_eq!(&reply, b"HTTP/1.1 421");
+    }
+
+    #[test]
+    fn a_full_print_queue_leaves_workers_free_for_status() {
+        // Eight prints stuck behind a stalled printer used to hold every
+        // worker, so the page could not even read the status. The queue is
+        // now shorter than the worker pool, and a place comes back when a
+        // job ends.
+        let held: Vec<PrintSlot> = std::iter::from_fn(PrintSlot::take).take(WORKERS).collect();
+        assert_eq!(held.len(), MAX_PRINTS);
+        assert!(PrintSlot::take().is_none());
+        drop(held);
+        assert!(PrintSlot::take().is_some());
     }
 
     #[test]

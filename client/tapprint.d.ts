@@ -1,6 +1,12 @@
 export interface TapPrintOptions {
   /** Port TapPrint listens on. Default 9240. */
   port?: number;
+  /**
+   * `false`: plain HTTP on `port`. `true`: HTTPS on `port + 1`, which TapPrint
+   * serves on macOS for Safari. `"auto"` (default): whichever answers, plain
+   * HTTP first.
+   */
+  secure?: boolean | "auto";
   /** A manual pairing code. Skips browser pairing. */
   code?: string;
   /** localStorage key for the site code. Default "tapprint.code". */
@@ -51,6 +57,8 @@ export type TapPrintReason =
   | "pair_failed"
   /** Nothing was printed. Load paper and print again. */
   | "paper_out"
+  /** Too many receipts are waiting for the printer. Nothing was printed. */
+  | "printer_busy"
   /** Part of the job may have printed. Printing again may give two receipts. */
   | "maybe_printed"
   | "printer_error"

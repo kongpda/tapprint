@@ -25,6 +25,9 @@ export class TapPrintError extends Error {
 /**
  * @typedef {Object} TapPrintOptions
  * @property {number} [port] Port TapPrint listens on. Default 9240.
+ * @property {boolean|"auto"} [secure] `false`: plain HTTP on `port`. `true`:
+ *   HTTPS on `port + 1`, which TapPrint serves on macOS for Safari. `"auto"`
+ *   (default): use whichever answers, plain HTTP first.
  * @property {string} [code] A manual pairing code. Skips browser pairing.
  * @property {string} [storageKey] localStorage key for the site code.
  * @property {string} [clientName] Name shown in the TapPrint window.
@@ -55,8 +58,16 @@ export class TapPrint {
   /**
    * @param {TapPrintOptions} [options]
    */
-  constructor({ port = 9240, code, storageKey = "tapprint.code", clientName } = {}) {
-    this.base = `http://127.0.0.1:${port}`;
+  constructor({ port = 9240, secure = "auto", code, storageKey = "tapprint.code", clientName } = {}) {
+    /** Where calls go. With `secure: "auto"` it is settled by the first call. */
+    this.base = secure === true ? `https://127.0.0.1:${port + 1}` : `http://127.0.0.1:${port}`;
+    /** Both addresses to try, or null when the caller fixed one. @type {string[]|null} */
+    this.candidates =
+      secure === "auto" ? [`http://127.0.0.1:${port}`, `https://127.0.0.1:${port + 1}`] : null;
+    /** True once `base` is known to answer. */
+    this.settled = this.candidates === null;
+    /** A probe in flight, shared by calls made at the same time. @type {Promise<string>|null} */
+    this.probing = null;
     this.storageKey = storageKey;
     this.clientName = clientName;
     /** A code passed in the options. It belongs to the caller and is never forgotten. */
@@ -105,6 +116,36 @@ export class TapPrint {
   }
 
   /**
+   * Find the address that answers. Safari refuses plain HTTP from an HTTPS
+   * page, so there the HTTPS port is the one that works. Only a status read
+   * is ever tried on both addresses: a print or a pairing request goes to one
+   * address once, so it can never be sent twice.
+   * @returns {Promise<string>}
+   */
+  _base() {
+    if (this.settled) return Promise.resolve(this.base);
+    this.probing ??= (async () => {
+      try {
+        for (const base of this.candidates ?? []) {
+          try {
+            // Any reply at all means the address can be reached.
+            await fetch(`${base}/v1/status`, { method: "GET" });
+            this.base = base;
+            this.settled = true;
+            return base;
+          } catch {
+            // Not reachable this way. Try the next one.
+          }
+        }
+        throw unreachable();
+      } finally {
+        this.probing = null;
+      }
+    })();
+    return this.probing;
+  }
+
+  /**
    * @param {string} path
    * @param {RequestInit & {headers?: Record<string,string>}} init
    * @param {boolean} sendCode
@@ -116,17 +157,14 @@ export class TapPrint {
     const code = sendCode ? this._code() : null;
     if (code) headers.Authorization = `Bearer ${code}`;
 
+    const base = await this._base();
     let response;
     try {
-      response = await fetch(this.base + path, { ...init, headers });
+      response = await fetch(base + path, { ...init, headers });
     } catch (cause) {
-      const error = new TapPrintError(
-        "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device.",
-        0,
-        "unreachable",
-      );
-      error.cause = cause;
-      throw error;
+      // TapPrint may have been restarted or set up differently. Look again next time.
+      if (this.candidates) this.settled = false;
+      throw unreachable(cause);
     }
     let body;
     try {
@@ -234,6 +272,20 @@ export class TapPrint {
     if (dither) headers["X-Dither"] = "1";
     await this._request("/v1/print", { method: "POST", headers, body }, true);
   }
+}
+
+/**
+ * @param {unknown} [cause]
+ * @returns {TapPrintError}
+ */
+function unreachable(cause) {
+  const error = new TapPrintError(
+    "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and choose Set up Safari.",
+    0,
+    "unreachable",
+  );
+  if (cause !== undefined) error.cause = cause;
+  return error;
 }
 
 /**

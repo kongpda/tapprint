@@ -694,7 +694,7 @@ impl Render for TillView {
                             snapshot
                                 .last_job
                                 .clone()
-                                .unwrap_or_else(|| "No receipts printed this session.".to_string()),
+                                .unwrap_or_else(|| "Nothing printed this session.".to_string()),
                         ),
                     );
             }
@@ -728,7 +728,10 @@ impl Render for TillView {
                 cx.listener(move |view, _: &ClickEvent, _, cx| {
                     view.page = page;
                     view.show_code = false;
+                    // A half-made choice must not still be armed on return.
                     view.confirm_rotate = false;
+                    view.confirm_remove = None;
+                    view.copied = false;
                     cx.notify();
                 }),
             ));
@@ -763,7 +766,12 @@ impl Render for TillView {
                     .text_xs()
                     .text_color(rgb(MUTED))
                     .child("Only this computer")
-                    .child(format!("{} receipts this session", snapshot.jobs)),
+                    // Test slips and drawer pulses count too, so not "receipts".
+                    .child(format!(
+                        "{} {} this session",
+                        snapshot.jobs,
+                        if snapshot.jobs == 1 { "job" } else { "jobs" }
+                    )),
             )
     }
 }

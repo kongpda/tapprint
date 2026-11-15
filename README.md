@@ -75,6 +75,8 @@ if (!till.isPaired()) await till.pair(); // the TapPrint window shows "A website
 await till.print(canvas, { drawer: true }); // canvas is 512 px wide
 ```
 
+The client works in Chrome, Edge, and Firefox. Safari on a Mac works after **Set up Safari** on TapPrint's Settings tab (see [HTTP API](#http-api)).
+
 `examples/index.html` is a full demo page. Serve the repository folder with any static server and open `/examples/`.
 
 Start TapPrint with the computer by turning on **Start at login** on the Settings tab. It adds a per-user login item and needs no administrator rights. If TapPrint cannot start (for example port 9240 is in use), a dialog says so.
@@ -93,7 +95,7 @@ Start TapPrint with the computer by turning on **Start at login** on the Setting
 
 TapPrint listens on `127.0.0.1` and the saved port (9240 by default). If the port is taken, it stops. It will not sit on the next port and catch the till page.
 
-The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Chrome and Edge use plain HTTP. Safari blocks an HTTPS page from calling plain HTTP, so on macOS TapPrint also serves the same API over HTTPS on `127.0.0.1:<port + 1>` (9241). Open Settings, choose Set up Safari, and approve the macOS prompt once. The certificate is self-signed, covers only `127.0.0.1`, `localhost` and `::1`, and its key stays in the settings folder.
+The host must be `127.0.0.1` or `localhost`, else the reply is `421`. CORS allows any origin, and replies carry `Access-Control-Allow-Private-Network: true`. Chrome and Edge use plain HTTP. Safari blocks an HTTPS page from calling plain HTTP, so on macOS TapPrint also serves the same API over HTTPS on `127.0.0.1:<port + 1>` (9241). Open Settings, choose Set up Safari, and approve the macOS prompt once. The certificate is self-signed, covers only `127.0.0.1` and `localhost`, and its key stays in the settings folder. The browser client finds the right address by itself: it tries plain HTTP, then HTTPS.
 
 Chrome 142 and later ask once per site before a page can reach apps on this computer (Local Network Access). Chrome 145 and later call this permission "Apps on device". The person at the till must click **Allow**. If they block it, the client reports `unreachable`. Reset it in the site settings (the icon left of the address). A cross-origin till page inside an iframe needs `allow="local-network-access; loopback-network"` on every `<iframe>` above it.
 
@@ -121,6 +123,7 @@ Chrome 142 and later ask once per site before a page can reach apps on this comp
 | 502 | `maybe_printed` | Part of the receipt may have printed. Check the paper before retrying, or the customer gets two. TapPrint resets the printer so the next receipt is clean. |
 | 502 | `printer_error` | The printer failed. |
 | 503 | `paper_out` | Out of paper. Nothing was sent. |
+| 503 | `printer_busy` | Six receipts are already waiting for the printer. Nothing was sent. Try again shortly. |
 
 ### `GET /v1/status`
 
@@ -236,6 +239,8 @@ Render Khmer and any QR code into the PNG. The printer has no Khmer code page.
 
 Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `drawer_pin` (2 or 5, default 2), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
 
+On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs **Set up Safari** again.
+
 TapPrint was called Receipt Till. On first start it reads an old `Receipt Till` (or `receipt-till`) settings file. The old file is left in place.
 
 ## Security model
@@ -250,6 +255,7 @@ TapPrint was called Receipt Till. On first start it reads an old `Receipt Till` 
 - Codes are compared in constant time.
 - The settings file is readable only by your user (mode 0600) on macOS and Linux.
 - Unpaired callers get no printer names or status text.
+- On macOS, **Set up Safari** makes this user's keychain trust one certificate that TapPrint made on this Mac. It names only `127.0.0.1` and `localhost` and is not a certificate authority, so it cannot vouch for any website. Its key is readable only by your user (mode 0600).
 
 See [SECURITY.md](SECURITY.md) to report a problem.
 
@@ -280,7 +286,7 @@ scripts/macos-app.sh
 open "dist/TapPrint.app"
 ```
 
-The script draws the icon and ad-hoc signs the bundle so this Mac can launch it. Use `scripts/install-local.sh` to install it. Quit any copy already listening on port 9240 first, including an old Receipt Till, or the new one stops.
+The script draws the icon and ad-hoc signs the bundle so this Mac can launch it. Set `TAPPRINT_BINARY=path` to bundle a binary you already built; the release workflow does this with its universal binary. Use `scripts/install-local.sh` to install it. Quit any copy already listening on port 9240 first, including an old Receipt Till, or the new one stops.
 
 **Windows.** Build on a Windows PC. The window's GPU shaders are compiled there, so a build from a Mac does not run. Install Rust and the Visual Studio Build Tools, then run `cargo build --release`. The app is `target\release\tapprint.exe`. It runs without a console window. Left-click the tray icon to open the window and right-click it for the menu.
 

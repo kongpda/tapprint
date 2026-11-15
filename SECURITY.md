@@ -23,11 +23,12 @@ What it defends against:
 - **LAN scanning.** The page cannot choose the printer address.
 - **Timing attacks on codes.** Codes are compared in constant time.
 - **Local file disclosure.** The config file is mode 0600 on macOS and Linux.
+- **A trusted certificate being misused.** For Safari on macOS, TapPrint makes its own certificate and, when the person at the till chooses **Set up Safari** and approves the macOS prompt, adds it to that user's keychain as trusted for TLS. The certificate names only `127.0.0.1` and `localhost`, is not a certificate authority, and lasts 800 days. Its key never leaves the settings folder and is mode 0600. So the trust it adds cannot be used to impersonate any website. The HTTPS port is bound to `127.0.0.1` and passes every request to the same checks as the plain port.
 
 What it does not defend against:
 
 - Anyone with access to the till's user account, who can read the config file and the manual pairing code.
-- Malware running as the same user. It can talk to the loopback port.
+- Malware running as the same user. It can talk to the loopback port. On macOS it can also read the certificate key and answer as `127.0.0.1` or `localhost` to this user's browsers, which gains it nothing it did not already have.
 - Programs on this computer faking `Origin`. Only browsers set `Origin` honestly. Any local program can send a pairing request in a known site's name, so the person at the till must still decide. The window warns when an already allowed site asks again.
 - A site the person at the till allowed. It can print receipts, and can send raw commands if raw mode is on.
 - Anyone holding the manual pairing code. It works from any origin. Keep it private.
