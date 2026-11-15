@@ -167,6 +167,21 @@ export class TapPrint {
     this._store(body.code);
   }
 
+  /**
+   * Give up this site's pairing. TapPrint removes the site from its window
+   * and the stored code is forgotten. Does nothing when no code is stored.
+   * A manual code passed in the options is not a site's code, so TapPrint
+   * answers "not_paired" for it.
+   * @returns {Promise<void>}
+   */
+  async unpair() {
+    const code = this._code();
+    if (!code) return;
+    await this._request("/v1/unpair", { method: "POST" }, true);
+    // Only the code that was just removed. Another tab may have paired since.
+    if (code !== this.givenCode) this._discard(code);
+  }
+
   /** @returns {boolean} True when a code is stored. It may still be revoked. */
   isPaired() {
     return Boolean(this._code());

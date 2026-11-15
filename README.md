@@ -77,7 +77,7 @@ await till.print(canvas, { drawer: true }); // canvas is 512 px wide
 
 `examples/index.html` is a full demo page. Serve the repository folder with any static server and open `/examples/`.
 
-Start TapPrint with the computer by turning on **Start with this computer** in the window. It adds a per-user login item and needs no administrator rights. If TapPrint cannot start (for example port 9240 is in use), a dialog says so.
+Start TapPrint with the computer by turning on **Start at login** on the Settings tab. It adds a per-user login item and needs no administrator rights. If TapPrint cannot start (for example port 9240 is in use), a dialog says so.
 
 ## Using the window
 
@@ -107,6 +107,7 @@ Chrome 142 and later ask once per site before a page can reach apps on this comp
 | --- | --- | --- |
 | 400 | `bad_request` | Malformed request, or `/v1/pair` without an http(s) `Origin`. |
 | 401 | `unauthorized` | Missing, wrong, or removed code. |
+| 401 | `not_paired` | `/v1/unpair` with a code that is not this site's own. |
 | 403 | `raw_disabled` | Raw ESC/POS sent while **Allow raw printer commands** is off. |
 | 403 | `pair_denied` | The person at the till clicked **Don't allow**. |
 | 404 | `not_found` | Unknown path. |
@@ -270,7 +271,7 @@ scripts/install-local.sh          # /Applications, then launch
 scripts/install-local.sh --user   # ~/Applications, no admin rights
 ```
 
-Use `--dest DIR` for another existing folder, `--no-launch` to install without opening, or `--force` to close a copy that will not quit. Finish printing before installing. The installer builds with the lockfile, generates all Retina icon sizes and the `.icns`, stamps the git commit in bundle metadata, ad-hoc signs and verifies the app, then replaces the installed copy with rollback on verification failure. Settings and paired sites stay in your user settings folder. Login startup remains controlled by **Start with this computer**.
+Use `--dest DIR` for another existing folder, `--no-launch` to install without opening, or `--force` to close a copy that will not quit. Finish printing before installing. The installer builds with the lockfile, generates all Retina icon sizes and the `.icns`, stamps the git commit in bundle metadata, ad-hoc signs and verifies the app, then replaces the installed copy with rollback on verification failure. Settings and paired sites stay in your user settings folder. Login startup remains controlled by **Start at login**.
 
 To build a bundle without installing:
 

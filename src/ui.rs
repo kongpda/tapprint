@@ -683,7 +683,7 @@ impl Render for TillView {
                         ),
                 );
                 content = match snapshot.transport {
-                    Transport::Usb => content.child(self.printer_card(cx, &snapshot, transport)),
+                    Transport::Usb => content.child(self.printer_card(cx, &snapshot)),
                     Transport::Tcp => content.child(self.network_card(cx, &saved_host)),
                 };
                 content = content
@@ -1061,12 +1061,7 @@ impl TillView {
         )
     }
 
-    fn printer_card(
-        &self,
-        cx: &mut Context<Self>,
-        snapshot: &crate::model::Snapshot,
-        transport: &str,
-    ) -> gpui::Div {
+    fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         let mut list = div().flex().flex_col().gap_2();
         if snapshot.printers.is_empty() {
             let message = if snapshot.listed {
@@ -1098,9 +1093,11 @@ impl TillView {
         }
         card()
             .child(label("USB printer"))
-            .child(div().text_sm().child(format!(
-                "{transport} devices · selected automatically when only one is available"
-            )))
+            .child(
+                div()
+                    .text_sm()
+                    .child("USB devices · selected automatically when only one is available"),
+            )
             .child(list)
     }
 

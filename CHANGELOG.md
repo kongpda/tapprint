@@ -5,7 +5,7 @@
 First public release.
 
 - Tray and menu-bar app for macOS, Windows, and Linux.
-- Local HTTP API on `127.0.0.1:9240`: `GET /v1/status`, `POST /v1/pair`, `POST /v1/print`.
+- Local HTTP API on `127.0.0.1:9240`: `GET /v1/status`, `POST /v1/pair`, `POST /v1/unpair`, `POST /v1/print`.
 - Prints PNG receipts to USB (printer class) and network (port 9100) ESC/POS thermal printers. No vendor driver and no print dialog.
 - One-click pairing: each site gets its own code bound to its origin, approved in the TapPrint window. Allowed sites can be removed there. Each pairing issues a fresh code, and the window warns when an allowed site asks again. A manual pairing code works for curl, servers, and kiosks.
 - Optional raw ESC/POS mode (off by default).
@@ -25,4 +25,4 @@ First public release.
 - A second copy of the app no longer rewrites the settings file before it finds the port taken.
 - The client reads the stored code on every call, so a code paired in another tab is used and is not wiped by an old one.
 - Safari support on macOS: TapPrint also answers on `https://127.0.0.1:9241` with its own loopback-only certificate. Settings > Set up Safari asks macOS to trust it. Chrome and Edge keep using plain HTTP. The HTTPS front uses rustls 0.23.
-- `POST /v1/unpair` lets a site drop its own pairing. The browser client has `disconnectTapPrint`.
+- `POST /v1/unpair` lets a site drop its own pairing. The browser client has `unpair()`.

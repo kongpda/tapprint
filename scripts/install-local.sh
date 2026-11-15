@@ -111,14 +111,8 @@ need iconutil "iconutil ships with macOS."
 need osascript "osascript ships with macOS."
 ok "Rust and macOS bundle tools found"
 
-# Destination must exist and be writable before we spend minutes building.
-if [[ ! -d "$DEST_DIR" ]]; then
-  if [[ "$DEST_DIR" == "$HOME/Applications" ]]; then
-    mkdir -p "$DEST_DIR"
-  else
-    fail "Install folder does not exist: $DEST_DIR"
-  fi
-fi
+# Destination must be writable before we spend minutes building. It was
+# already checked to exist (and ~/Applications created) above.
 [[ -w "$DEST_DIR" ]] || fail "Can't write to $DEST_DIR." "Re-run with --user to install into ~/Applications instead."
 ok "Installing to $DST_APP"
 

@@ -42,6 +42,8 @@ export type TapPrintReason =
   | "unsupported_type"
   | "raw_disabled"
   | "unauthorized"
+  /** `unpair()` was called with a code that is not this site's own. */
+  | "not_paired"
   | "pair_denied"
   | "pair_timeout"
   | "pair_busy"
@@ -67,6 +69,7 @@ export class TapPrint {
   constructor(options?: TapPrintOptions);
   status(): Promise<TapPrintStatus>;
   pair(): Promise<void>;
+  unpair(): Promise<void>;
   isPaired(): boolean;
   forget(): void;
   print(source: Blob | HTMLCanvasElement | OffscreenCanvas, options?: PrintOptions): Promise<void>;

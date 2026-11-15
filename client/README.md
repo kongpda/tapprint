@@ -31,7 +31,8 @@ try {
 - `status()` returns the status JSON. Printer names and the status line appear only when paired.
 - `pair()` asks TapPrint to show "A website wants to print" with this site's origin. It waits up to 120 seconds and stores the code in `localStorage`.
 - `isPaired()` is true when a code is stored. The code may still have been removed in the TapPrint window.
-- `forget()` deletes the stored code.
+- `unpair()` tells TapPrint to remove this site, then deletes the stored code. The site disappears from the TapPrint window. It does nothing when no code is stored.
+- `forget()` deletes the stored code only. TapPrint still lists the site.
 - `print(source, { paperMm, cut = true, drawer = false, dither = false })` prints a `Blob` (PNG), `HTMLCanvasElement`, or `OffscreenCanvas`.
 - `printRaw(bytes)` sends raw ESC/POS bytes exactly as given, so include your own cut and drawer commands. It fails with reason `raw_disabled` unless the person at the till turned on **Allow raw printer commands**.
 
@@ -39,4 +40,4 @@ Every failure throws `TapPrintError` with `status` (0 if TapPrint is not reachab
 
 Render canvases at 512 px wide for 80 mm paper or 360 px for 58 mm, or a whole multiple.
 
-Use Chrome or Edge. Safari may block HTTPS pages from calling the loopback address.
+Use Chrome or Edge. This client calls plain `http://127.0.0.1`, which Safari blocks from an HTTPS page. TapPrint's HTTPS port for Safari on macOS (see the [HTTP API](../README.md#http-api)) is not used by this client yet.
