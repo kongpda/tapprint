@@ -32,6 +32,11 @@ tiny_http = "0.12"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
+# The same two again, so the HTTPS relay's tests also run on Linux.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Devices_DeviceAndDriverInstallation",

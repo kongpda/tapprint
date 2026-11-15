@@ -44,11 +44,7 @@ pub fn serve(shared: Arc<Shared>) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn serve_secure(port: u16) -> Result<(), String> {
     let secure = crate::tls::secure_port(port).ok_or("no port is free for HTTPS")?;
-    let identity = crate::tls::identity(&crate::model::data_dir())?;
-    crate::tls::forward(secure, port, &identity)
-        .map_err(|error| format!("port {secure} could not be opened ({error})"))?;
-    crate::tls::mark_serving(&identity.certificate_path);
-    Ok(())
+    crate::tls::start(secure, port, &crate::model::data_dir())
 }
 
 fn spawn_workers(
