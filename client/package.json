@@ -14,5 +14,8 @@
   "files": ["tapprint.js", "tapprint.d.ts", "README.md"],
   "license": "MIT",
   "repository": "https://github.com/kongpda/tapprint",
-  "private": true
+  "private": true,
+  "scripts": {
+    "test": "node --test tapprint.test.mjs"
+  }
 }

@@ -4,6 +4,8 @@ Print receipts from a web page with no print dialog and no printer driver.
 
 TapPrint is a tray app for macOS, Windows, and Linux. Your page sends a receipt image; TapPrint prints it on a USB or network thermal printer.
 
+<img src="docs/window.png" alt="The TapPrint window, set to a network printer" width="360">
+
 ## Install
 
 1. Download from [Releases](https://github.com/kongpda/tapprint/releases) and open it. Builds are unsigned, so allow it once: **Open Anyway** on macOS (System Settings > Privacy & Security), **More info > Run anyway** on Windows.
@@ -39,6 +41,7 @@ TapPrint listens only on this computer. A site can print only after the person a
 
 - [Browser client](client/README.md)
 - [HTTP API](docs/api.md), for `curl` and servers
+- [Troubleshooting](docs/troubleshooting.md)
 - [Building from source](docs/building.md)
 - [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 

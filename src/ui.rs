@@ -49,6 +49,11 @@ const BUSY_FG: u32 = 0x775b18;
 const BAD_BG: u32 = 0xfceeed;
 const BAD_FG: u32 = 0x9d3833;
 
+const NO_SITES: &str =
+    "No websites yet. When your till page asks to print, its request shows here for you to allow.";
+const RAW_HELP: &str = "Off is recommended. Raw ESC/POS commands can change printer settings. Turn it on only if your till needs it.";
+const USB_HELP: &str = "USB printers must use Printer Class. Remove a conflicting system print queue, then reconnect the printer.";
+
 // Embedded vector icons keep the local bundle self-contained.
 const EYE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>"#;
 const EYE_OFF: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3 4M6 6.5A19 19 0 0 0 2 12s3.5 7 10 7a13 13 0 0 0 5.5-1.5M10 10a3 3 0 0 0 4 4"/></svg>"#;
@@ -688,6 +693,7 @@ impl Render for TillView {
                 };
                 content = content
                     .child(self.paper_card(cx, &snapshot))
+                    .child(self.drawer_card(cx, &snapshot))
                     .child(self.job_buttons(cx))
                     .child(
                         div().text_xs().text_color(rgb(MUTED)).child(
@@ -708,11 +714,23 @@ impl Render for TillView {
                 if crate::tls::serving() {
                     content = content.child(self.safari_card(cx));
                 }
-                content = content.child(self.startup_card(cx)).child(self.code_card(cx, &snapshot)).child(self.raw_card(cx, &snapshot))
-                    .child(card().child(label("ABOUT"))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child(format!("TapPrint {} · 127.0.0.1:{}", env!("CARGO_PKG_VERSION"), snapshot.port)))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child("USB printers must use Printer Class. Remove a conflicting system print queue, then reconnect the printer."))
-                        .child(div().text_xs().text_color(rgb(MUTED)).child(format!("Settings: {}", snapshot.config_path))));
+                let about = format!(
+                    "TapPrint {} · 127.0.0.1:{}",
+                    env!("CARGO_PKG_VERSION"),
+                    snapshot.port
+                );
+                let settings_file = format!("Settings: {}", snapshot.config_path);
+                content = content
+                    .child(self.startup_card(cx))
+                    .child(self.code_card(cx, &snapshot))
+                    .child(self.raw_card(cx, &snapshot))
+                    .child(
+                        card()
+                            .child(label("ABOUT"))
+                            .child(hint(about))
+                            .child(hint(USB_HELP))
+                            .child(hint(settings_file)),
+                    );
             }
         }
         let mut tabs = div().flex().gap_2().px_4().pb_3();
@@ -840,12 +858,7 @@ impl TillView {
     fn sites_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         let mut list = div().flex().flex_col().gap_2();
         if snapshot.sites.is_empty() {
-            list = list.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(MUTED))
-                    .child("No websites paired yet. Choose Connect in your till page, then approve its request here."),
-            );
+            list = list.child(div().text_sm().text_color(rgb(MUTED)).child(NO_SITES));
         }
         for origin in &snapshot.sites {
             let remove = origin.clone();
@@ -889,15 +902,24 @@ impl TillView {
 
     fn raw_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
         card()
-            .child(div().flex().items_center().justify_between().gap_2()
-                .child(label("Raw printer commands"))
-                .child(toggle("raw-toggle", "Allow raw printer commands", snapshot.allow_raw,
-                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.shared.set_allow_raw(!view.snapshot.allow_raw); view.pull(cx);
-                    }))))
-            .child(div().text_xs().text_color(rgb(MUTED)).child(
-                "Off is recommended. Raw ESC/POS commands can change printer settings. Enable only if your till requires them.",
-            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(setting("Raw printer commands"))
+                    .child(toggle(
+                        "raw-toggle",
+                        "Allow raw printer commands",
+                        snapshot.allow_raw,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.shared.set_allow_raw(!view.snapshot.allow_raw);
+                            view.pull(cx);
+                        }),
+                    )),
+            )
+            .child(hint(RAW_HELP))
     }
 
     fn activity_card(&self, snapshot: &crate::model::Snapshot) -> gpui::Div {
@@ -927,7 +949,6 @@ impl TillView {
             .last_job
             .clone()
             .unwrap_or_else(|| "No print yet".to_string());
-        let jobs = if snapshot.jobs == 1 { "job" } else { "jobs" };
         card()
             .child(label("RECENT ACTIVITY"))
             .child(
@@ -938,11 +959,6 @@ impl TillView {
             )
             .child(rows)
             .child(hint(format!("Last job: {last}")))
-            .child(hint(format!(
-                "{} {jobs} printed since TapPrint opened  ·  version {}",
-                snapshot.jobs,
-                env!("CARGO_PKG_VERSION")
-            )))
     }
 
     fn code_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
@@ -955,14 +971,14 @@ impl TillView {
         } else {
             (
                 "New code",
-                "Keep this code private. Use Copy code for manual integrations.",
+                "Keep this code private. It works from any program on this computer.",
             )
         };
         card()
             .child(label("MANUAL PAIRING"))
             .child(
                 div().text_xs().text_color(rgb(MUTED)).child(
-                    "Websites connect with Allow. Use this code only for manual integrations.",
+                    "For curl, servers, and kiosks. Websites do not need it: they ask, and you click Allow.",
                 ),
             )
             .child(
@@ -1044,7 +1060,7 @@ impl TillView {
     }
 
     fn paper_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
-        card().child(label("Paper")).child(
+        card().child(label("PAPER")).child(
             div()
                 .flex()
                 .gap_2()
@@ -1067,6 +1083,27 @@ impl TillView {
                     }),
                 )),
         )
+    }
+
+    fn drawer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
+        let mut pins = div().flex().gap_2();
+        for (id, title, pin) in [
+            ("drawer-pin-2", "Pin 2", 2u8),
+            ("drawer-pin-5", "Pin 5", 5u8),
+        ] {
+            pins = pins.child(choice(
+                id,
+                title,
+                snapshot.drawer_pin == pin,
+                cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    view.shared.set_drawer_pin(pin);
+                    view.pull(cx);
+                }),
+            ));
+        }
+        card().child(label("CASH DRAWER")).child(pins).child(hint(
+            "Most drawers use pin 2. If Open drawer does nothing, try pin 5.",
+        ))
     }
 
     fn printer_card(&self, cx: &mut Context<Self>, snapshot: &crate::model::Snapshot) -> gpui::Div {
@@ -1099,21 +1136,16 @@ impl TillView {
                 ));
             }
         }
-        card()
-            .child(label("USB printer"))
-            .child(
-                div()
-                    .text_sm()
-                    .child("USB devices · selected automatically when only one is available"),
-            )
-            .child(list)
+        card().child(label("USB PRINTER")).child(list).child(hint(
+            "A single printer is chosen for you. With several, pick one.",
+        ))
     }
 
     fn network_card(&self, cx: &mut Context<Self>, saved_host: &str) -> gpui::Div {
         card()
             .key_context("TapPrint")
             .on_action(cx.listener(Self::on_save))
-            .child(label("Network printer"))
+            .child(label("NETWORK PRINTER"))
             .child(hint(
                 "Port 9100 is the usual raw printer port. Press Enter to use this address.",
             ))
@@ -1171,7 +1203,7 @@ impl TillView {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .child(label("Start at login"))
+                    .child(setting("Start at login"))
                     .child(toggle(
                         "autostart-toggle",
                         "Start TapPrint at login",
@@ -1279,6 +1311,15 @@ fn label(text: &'static str) -> gpui::Div {
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(MUTED))
+        .child(text)
+}
+
+/// The name of one switch. Darker than a section label, so the row reads as
+/// something to act on.
+fn setting(text: &'static str) -> gpui::Div {
+    div()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
         .child(text)
 }
 

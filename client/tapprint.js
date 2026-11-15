@@ -249,7 +249,7 @@ export class TapPrint {
 
   /**
    * Send raw ESC/POS bytes unchanged. The person at the till must turn on
-   * "Allow raw printer commands" in the TapPrint window, else reason is "raw_disabled".
+   * "Raw printer commands" in the TapPrint window, else reason is "raw_disabled".
    * The bytes go out exactly as given: add your own cut or drawer commands.
    * @param {Uint8Array} bytes
    * @returns {Promise<void>}

@@ -1,6 +1,6 @@
 # Building from source
 
-You need Rust (stable, edition 2024).
+You need Rust 1.95 or newer.
 
 ```shell
 cargo run              # development

@@ -28,6 +28,9 @@ const UNANSWERED_FOR: Duration = Duration::from_secs(60);
 /// After any No or timeout, no site may ask for this long. One page can own
 /// many origins, and must not be able to keep a prompt up by rotating them.
 const PROMPT_GAP: Duration = Duration::from_secs(15);
+/// Start of the status shown when USB devices could not be listed.
+const USB_SCAN_FAILED: &str = "Could not look for USB printers";
+const TYPE_ADDRESS: &str = "Enter the printer's address below";
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
@@ -187,6 +190,8 @@ pub struct Snapshot {
     pub last_job: Option<String>,
     pub allow_raw: bool,
     pub drawer: [u8; 5],
+    /// The printer connector pin the drawer is wired to: 2 or 5.
+    pub drawer_pin: u8,
     /// Origins allowed to print with their own code.
     pub sites: Vec<String>,
     /// A site waiting for the cashier.
@@ -345,6 +350,7 @@ impl Shared {
                 state.config.drawer_on_ms,
                 state.config.drawer_off_ms,
             ),
+            drawer_pin: state.config.drawer_pin,
             sites: state
                 .config
                 .sites
@@ -465,7 +471,7 @@ impl Shared {
                 state.tone = Tone::Ready;
                 state.status = "Ready to print".to_string();
             }
-            if state.status.starts_with("USB: ") {
+            if state.status.starts_with(USB_SCAN_FAILED) {
                 state.tone = Tone::Ready;
                 state.status = "Ready to print".to_string();
             }
@@ -477,8 +483,31 @@ impl Shared {
         }
     }
 
+    /// The USB scan failed. Only a till that prints over USB is told: on a
+    /// network printer the message would be noise, repeated every second.
     pub fn note_usb_error(&self, error: &str) {
-        self.set_status(Tone::Problem, format!("USB: {error}"));
+        let mut state = self.lock();
+        state.printers.clear();
+        // The scan ran, so the window stops saying it is still looking.
+        state.listed = true;
+        if state.config.transport == Transport::Usb && state.tone != Tone::Busy {
+            state.tone = Tone::Problem;
+            state.status = format!("{USB_SCAN_FAILED} ({error}).");
+        }
+    }
+
+    /// Drawers are wired to pin 2 or pin 5 of the printer's drawer socket.
+    pub fn set_drawer_pin(&self, pin: u8) {
+        if !matches!(pin, 2 | 5) {
+            return;
+        }
+        {
+            let mut state = self.lock();
+            state.config.drawer_pin = pin;
+            state.tone = Tone::Ready;
+            state.status = format!("The drawer opens on pin {pin}");
+        }
+        let _ = self.persist();
     }
 
     pub fn set_paper(&self, paper: Paper) {
@@ -521,17 +550,24 @@ impl Shared {
         self.persist()
     }
 
-    /// Use the address already stored, without reading the text fields.
+    /// Switch to the network printer, using the address already stored. With
+    /// no usable address yet, still switch: the window then shows the address
+    /// fields, which is the only place the address can be typed.
     pub fn use_saved_network(&self) -> Result<(), String> {
-        let (host, port) = {
-            let state = self.lock();
-            (state.config.tcp_host.clone(), state.config.tcp_port)
-        };
-        check_host(host.trim())?;
-        if self.set_transport(Transport::Tcp).is_ok() {
-            self.set_status(Tone::Ready, format!("Using network printer {host}:{port}"));
+        {
+            let mut state = self.lock();
+            state.config.transport = Transport::Tcp;
+            state.tone = Tone::Ready;
+            state.status = if check_host(state.config.tcp_host.trim()).is_ok() {
+                format!(
+                    "Using network printer {}:{}",
+                    state.config.tcp_host, state.config.tcp_port
+                )
+            } else {
+                TYPE_ADDRESS.to_string()
+            };
         }
-        Ok(())
+        self.persist()
     }
 
     pub fn rotate_code(&self) -> Result<(), String> {
@@ -1162,6 +1198,57 @@ mod tests {
             ("04b8:0e15:1:9".to_string(), "USB".to_string()),
         ]);
         assert_eq!(shared.snapshot().usb_id.as_deref(), Some("04b8:0202:1:7"));
+    }
+
+    #[test]
+    fn network_can_be_chosen_before_any_address_is_saved() {
+        // The address fields only show once Network is chosen. Refusing the
+        // switch for lack of an address left no way to type the first one.
+        let shared = Shared::load_from(isolated("first-network"), None).unwrap();
+        shared.use_saved_network().unwrap();
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.transport, Transport::Tcp);
+        assert_eq!(snapshot.tone, Tone::Ready);
+        assert_eq!(snapshot.status, TYPE_ADDRESS);
+
+        shared.set_network("192.168.1.20", 9100).unwrap();
+        shared.set_transport(Transport::Usb).unwrap();
+        shared.use_saved_network().unwrap();
+        assert_eq!(
+            shared.snapshot().status,
+            "Using network printer 192.168.1.20:9100"
+        );
+    }
+
+    #[test]
+    fn a_failed_usb_scan_is_only_shown_to_a_usb_till() {
+        let shared = Shared::load_from(isolated("usb-scan"), None).unwrap();
+        shared.note_usb_error("access denied");
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.tone, Tone::Problem);
+        assert!(snapshot.status.contains("access denied"));
+        // The scan ran, so the window does not say it is still looking.
+        assert!(snapshot.listed);
+        // A scan that works again clears the message.
+        shared.set_printers(Vec::new());
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+
+        // A till on a network printer never hears about USB.
+        shared.set_network("192.168.1.20", 9100).unwrap();
+        shared.note_usb_error("access denied");
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+    }
+
+    #[test]
+    fn the_drawer_pin_can_be_changed_and_is_kept() {
+        let path = isolated("drawer-pin");
+        let shared = Shared::load_from(path.clone(), None).unwrap();
+        assert_eq!(shared.snapshot().drawer_pin, 2);
+        shared.set_drawer_pin(5);
+        shared.set_drawer_pin(9); // not a pin a drawer can be on
+        let reloaded = Shared::load_from(path, None).unwrap().snapshot();
+        assert_eq!(reloaded.drawer_pin, 5);
+        assert_eq!(reloaded.drawer[2], 1);
     }
 
     #[test]

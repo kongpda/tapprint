@@ -19,7 +19,7 @@ Chrome 142 and later ask once per site before a page can reach apps on this comp
 | 400 | `bad_request` | Malformed request, or `/v1/pair` without an http(s) `Origin`. |
 | 401 | `unauthorized` | Missing, wrong, or removed code. |
 | 401 | `not_paired` | `/v1/unpair` with a code that is not this site's own. |
-| 403 | `raw_disabled` | Raw ESC/POS sent while **Allow raw printer commands** is off. |
+| 403 | `raw_disabled` | Raw ESC/POS sent while **Raw printer commands** is off. |
 | 403 | `pair_denied` | The person at the till clicked **Don't allow**. |
 | 404 | `not_found` | Unknown path. |
 | 408 | `pair_timeout` | Nobody answered within 120 s. |
@@ -77,7 +77,7 @@ Header `Authorization: Bearer <code>`. The code is either:
 The body is one of:
 
 - `Content-Type: image/png`. A receipt image.
-- `Content-Type: application/vnd.escpos`. Raw ESC/POS bytes, sent unchanged. Only when **Allow raw printer commands** is on, else `403` `raw_disabled`. It is off by default because raw commands can rewrite printer settings.
+- `Content-Type: application/vnd.escpos`. Raw ESC/POS bytes, sent unchanged. Only when **Raw printer commands** is on (Settings tab), else `403` `raw_disabled`. It is off by default because raw commands can rewrite printer settings.
 
 Optional headers:
 
@@ -112,7 +112,7 @@ curl -X POST http://127.0.0.1:9240/v1/print \
   -H "X-Drawer: 1" \
   --data-binary @receipt.png
 
-# Raw ESC/POS (needs "Allow raw printer commands"): text, feed, cut
+# Raw ESC/POS (needs "Raw printer commands"): text, feed, cut
 printf 'Hello\n\n\n\035V\102\000' | curl -X POST http://127.0.0.1:9240/v1/print \
   -H "Authorization: Bearer <pairing code>" \
   -H "Content-Type: application/vnd.escpos" \
@@ -146,7 +146,7 @@ Render Khmer and any QR code into the PNG. The printer has no Khmer code page.
 | Windows | `%APPDATA%\TapPrint\config.json` |
 | Linux | `$XDG_CONFIG_HOME/tapprint/config.json` |
 
-Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `drawer_pin` (2 or 5, default 2), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
+Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `tcp_host`, `tcp_port`, `usb_id`, `allow_raw` (false), `drawer_pin` (2 or 5, default 2, also in the window), `drawer_on_ms` and `drawer_off_ms` (50 and 50), and `sites` (a list of `{origin, code}`).
 
 On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs **Set up Safari** again.
 

@@ -33,3 +33,7 @@ First public release.
 - The window footer counts jobs, not receipts, because test slips and drawer pulses are counted too.
 - The Mac app says why it uses the local network (`NSLocalNetworkUsageDescription`), for the macOS 15 prompt when a network printer is used.
 - CI runs clippy on macOS, Windows, and Linux, builds the Mac bundle, and tests the browser client.
+- Fixed: on a new install, choosing **Network** did nothing, so a network printer's address could not be typed in the window.
+- The window has a **Cash drawer** setting for pin 2 or pin 5. It used to need a settings-file edit.
+- A failed USB scan says "Could not look for USB printers" instead of a bare error, and is no longer shown to a till that prints over the network.
+- Clearer wording in the window, and section headings in one style.
