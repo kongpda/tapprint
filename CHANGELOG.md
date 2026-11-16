@@ -2,6 +2,8 @@
 
 ## 0.1.0
 
+`0.1.0-rc.1` is a test build of this release. It has not been tried on real printers yet.
+
 First public release.
 
 - Tray and menu-bar app for macOS, Windows, and Linux.

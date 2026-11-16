@@ -125,6 +125,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # Whether the signing key is set up, without exposing it to every step.
+      CAN_SIGN: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,9 +143,9 @@ jobs:
       # signature. Without the secret the release still works: the app then
       # shows the download page instead of updating itself.
       - name: Sign the checksums
+        if: env.CAN_SIGN == 'true'
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        if: env.MINISIGN_SECRET_KEY != ''
         run: |
           set -eu
           sudo apt-get update

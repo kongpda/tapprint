@@ -1,6 +1,6 @@
 [package]
 name = "tapprint"
-version = "0.1.0"
+version = "0.1.0-rc.1"
 edition = "2024"
 # The oldest Rust that builds every dependency (set by gpui-ce).
 rust-version = "1.95"

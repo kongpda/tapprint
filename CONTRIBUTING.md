@@ -46,7 +46,7 @@ GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-w
 2. Merge to `main` and wait for CI to pass.
 3. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must match the version in `Cargo.toml`.
 
-The Release workflow builds macOS (universal), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release. The builds are not signed; see "Signing a Mac build" in [docs/building.md](docs/building.md).
+The Release workflow builds macOS (universal), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The builds are not signed; see "Signing a Mac build" in [docs/building.md](docs/building.md).
 
 ## Signing updates
 

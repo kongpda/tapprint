@@ -155,20 +155,29 @@ fn newer_release(api: &str, current: &str) -> Result<Option<Release>, String> {
     }))
 }
 
-/// `1.2.3` as numbers. A pre-release such as `1.2.3-rc.1` is not offered.
-fn parse(version: &str) -> Option<[u64; 3]> {
-    let mut parts = version.split('.');
+/// `1.2.3` as numbers, and whether a pre-release tag such as `-rc.1` follows.
+fn parse(version: &str) -> Option<([u64; 3], bool)> {
+    let (core, tag) = match version.split_once('-') {
+        Some((core, tag)) if !tag.is_empty() => (core, true),
+        Some(_) => return None,
+        None => (version, false),
+    };
+    let mut parts = core.split('.');
     let numbers = [
         parts.next()?.parse().ok()?,
         parts.next()?.parse().ok()?,
         parts.next()?.parse().ok()?,
     ];
-    parts.next().is_none().then_some(numbers)
+    parts.next().is_none().then_some((numbers, tag))
 }
 
+/// Only a finished release is ever offered. A copy that is itself a test
+/// build, such as `0.1.0-rc.1`, is offered the finished `0.1.0`.
 fn is_newer(candidate: &str, current: &str) -> bool {
     match (parse(candidate), parse(current)) {
-        (Some(candidate), Some(current)) => candidate > current,
+        (Some((candidate, false)), Some((current, test_build))) => {
+            candidate > current || (candidate == current && test_build)
+        }
         _ => false,
     }
 }
@@ -427,6 +436,13 @@ mod tests {
         assert!(!is_newer("0.1.0", "0.2.0"));
         // A test build must never be handed to a till.
         assert!(!is_newer("0.2.0-rc.1", "0.1.0"));
+        assert!(!is_newer("0.2.0-", "0.1.0"));
+        // A till on a test build moves to the finished release of the same
+        // number, and to anything later, but not to an older one.
+        assert!(is_newer("0.1.0", "0.1.0-rc.1"));
+        assert!(is_newer("0.2.0", "0.1.0-rc.1"));
+        assert!(!is_newer("0.0.9", "0.1.0-rc.1"));
+        assert!(!is_newer("0.1.0-rc.2", "0.1.0-rc.1"));
         assert!(!is_newer("latest", "0.1.0"));
         assert!(!is_newer("", "0.1.0"));
     }
