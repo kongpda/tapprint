@@ -3,6 +3,10 @@
 /**
  * Error thrown for every failed TapPrint call.
  * `status` is the HTTP status (0 when TapPrint could not be reached).
+ * `detail` says why TapPrint was unreachable, when the browser tells:
+ * "insecure_page" (the page is not on HTTPS), "blocked_by_csp" (the site's
+ * Content-Security-Policy forbids the call), or "permission_denied" (the
+ * person blocked the site from reaching apps on this device).
  * `reason` is the machine code from the API, such as "unauthorized",
  * "paper_out" or "maybe_printed", or "unreachable" / "bad_response".
  */
@@ -19,12 +23,17 @@ export class TapPrintError extends Error {
     this.status = status;
     /** @type {string} */
     this.reason = reason;
+    /** @type {"insecure_page"|"blocked_by_csp"|"permission_denied"|undefined} */
+    this.detail = undefined;
   }
 }
 
 /**
  * @typedef {Object} TapPrintOptions
  * @property {number} [port] Port TapPrint listens on. Default 9240.
+ * @property {boolean|"auto"} [secure] `false`: plain HTTP on `port`. `true`:
+ *   HTTPS on `port + 1`, which TapPrint serves on macOS for Safari. `"auto"`
+ *   (default): use whichever answers, plain HTTP first.
  * @property {string} [code] A manual pairing code. Skips browser pairing.
  * @property {string} [storageKey] localStorage key for the site code.
  * @property {string} [clientName] Name shown in the TapPrint window.
@@ -55,8 +64,25 @@ export class TapPrint {
   /**
    * @param {TapPrintOptions} [options]
    */
-  constructor({ port = 9240, code, storageKey = "tapprint.code", clientName } = {}) {
-    this.base = `http://127.0.0.1:${port}`;
+  constructor({ port = 9240, secure = "auto", code, storageKey = "tapprint.code", clientName } = {}) {
+    /** Where calls go. With `secure: "auto"` it is settled by the first call. */
+    this.base = secure === true ? `https://127.0.0.1:${port + 1}` : `http://127.0.0.1:${port}`;
+    /** Both addresses to try, or null when the caller fixed one. @type {string[]|null} */
+    this.candidates =
+      secure === "auto" ? [`http://127.0.0.1:${port}`, `https://127.0.0.1:${port + 1}`] : null;
+    /** True once `base` is known to answer. */
+    this.settled = this.candidates === null;
+    /** A probe in flight, shared by calls made at the same time. @type {Promise<string>|null} */
+    this.probing = null;
+    /** Set when the site's own Content-Security-Policy refused a call to TapPrint. */
+    this.cspBlocked = false;
+    try {
+      globalThis.addEventListener?.("securitypolicyviolation", (event) => {
+        if (/^https?:\/\/127\.0\.0\.1(:|\/|$)/.test(event.blockedURI || "")) this.cspBlocked = true;
+      });
+    } catch {
+      // No such event here (a worker or a test). The plain message is used.
+    }
     this.storageKey = storageKey;
     this.clientName = clientName;
     /** A code passed in the options. It belongs to the caller and is never forgotten. */
@@ -105,6 +131,67 @@ export class TapPrint {
   }
 
   /**
+   * Find the address that answers. Safari refuses plain HTTP from an HTTPS
+   * page, so there the HTTPS port is the one that works. Only a status read
+   * is ever tried on both addresses: a print or a pairing request goes to one
+   * address once, so it can never be sent twice.
+   * @returns {Promise<string>}
+   */
+  _base() {
+    if (this.settled) return Promise.resolve(this.base);
+    this.probing ??= (async () => {
+      try {
+        for (const base of this.candidates ?? []) {
+          try {
+            // Any reply at all means the address can be reached.
+            await fetch(`${base}/v1/status`, { method: "GET" });
+            this.base = base;
+            this.settled = true;
+            return base;
+          } catch {
+            // Not reachable this way. Try the next one.
+          }
+        }
+        throw await this._unreachable();
+      } finally {
+        this.probing = null;
+      }
+    })();
+    return this.probing;
+  }
+
+  /**
+   * The error for "no answer", with the cause when the browser reveals it.
+   * A blocked call and a stopped TapPrint look the same to `fetch`, so the
+   * three causes a site owner can fix are checked for by name.
+   * @param {unknown} [cause]
+   * @returns {Promise<TapPrintError>}
+   */
+  async _unreachable(cause) {
+    // The policy event arrives just after the failed call.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    /** @type {TapPrintError["detail"]} */
+    let detail;
+    let message =
+      "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device. In Safari on a Mac, open Settings in TapPrint and set up Safari.";
+    if (this.cspBlocked) {
+      detail = "blocked_by_csp";
+      message = `This site's Content-Security-Policy blocks TapPrint. Add ${(this.candidates ?? [this.base]).join(" and ")} to connect-src.`;
+    } else if (globalThis.isSecureContext === false) {
+      detail = "insecure_page";
+      message = "This page is not on HTTPS, so the browser will not let it reach TapPrint. Serve the page over HTTPS.";
+    } else if (await loopbackDenied()) {
+      detail = "permission_denied";
+      message =
+        "The browser has blocked this site from reaching apps on this device. Allow it in the site settings (the icon left of the address), then reload.";
+    }
+    const error = new TapPrintError(message, 0, "unreachable");
+    error.detail = detail;
+    if (cause !== undefined) error.cause = cause;
+    return error;
+  }
+
+  /**
    * @param {string} path
    * @param {RequestInit & {headers?: Record<string,string>}} init
    * @param {boolean} sendCode
@@ -116,17 +203,14 @@ export class TapPrint {
     const code = sendCode ? this._code() : null;
     if (code) headers.Authorization = `Bearer ${code}`;
 
+    const base = await this._base();
     let response;
     try {
-      response = await fetch(this.base + path, { ...init, headers });
+      response = await fetch(base + path, { ...init, headers });
     } catch (cause) {
-      const error = new TapPrintError(
-        "Cannot reach TapPrint. Check that it is running on this computer, and that the browser is allowed to reach apps on this device.",
-        0,
-        "unreachable",
-      );
-      error.cause = cause;
-      throw error;
+      // TapPrint may have been restarted or set up differently. Look again next time.
+      if (this.candidates) this.settled = false;
+      throw await this._unreachable(cause);
     }
     let body;
     try {
@@ -167,6 +251,21 @@ export class TapPrint {
     this._store(body.code);
   }
 
+  /**
+   * Give up this site's pairing. TapPrint removes the site from its window
+   * and the stored code is forgotten. Does nothing when no code is stored.
+   * A manual code passed in the options is not a site's code, so TapPrint
+   * answers "not_paired" for it.
+   * @returns {Promise<void>}
+   */
+  async unpair() {
+    const code = this._code();
+    if (!code) return;
+    await this._request("/v1/unpair", { method: "POST" }, true);
+    // Only the code that was just removed. Another tab may have paired since.
+    if (code !== this.givenCode) this._discard(code);
+  }
+
   /** @returns {boolean} True when a code is stored. It may still be revoked. */
   isPaired() {
     return Boolean(this._code());
@@ -196,7 +295,7 @@ export class TapPrint {
 
   /**
    * Send raw ESC/POS bytes unchanged. The person at the till must turn on
-   * "Allow raw printer commands" in the TapPrint window, else reason is "raw_disabled".
+   * "Raw printer commands" in the TapPrint window, else reason is "raw_disabled".
    * The bytes go out exactly as given: add your own cut or drawer commands.
    * @param {Uint8Array} bytes
    * @returns {Promise<void>}
@@ -219,6 +318,24 @@ export class TapPrint {
     if (dither) headers["X-Dither"] = "1";
     await this._request("/v1/print", { method: "POST", headers, body }, true);
   }
+}
+
+/**
+ * Did the person block this site from reaching apps on this device? Chrome
+ * and Edge can say. The permission was renamed once, so both names are tried.
+ * @returns {Promise<boolean>}
+ */
+async function loopbackDenied() {
+  for (const name of ["loopback-network", "local-network-access"]) {
+    try {
+      // @ts-ignore These names are newer than the DOM typings.
+      const status = await globalThis.navigator?.permissions?.query({ name });
+      if (status) return status.state === "denied";
+    } catch {
+      // This browser does not know the name. Try the next one.
+    }
+  }
+  return false;
 }
 
 /**

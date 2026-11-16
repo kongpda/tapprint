@@ -14,9 +14,10 @@
 </head>
 <body>
 <h1>TapPrint demo</h1>
-<p>Start TapPrint on this computer, then serve this folder's parent (for example <code>python3 -m http.server</code>) and open <code>/examples/</code> in Chrome or Edge.</p>
+<p>Start TapPrint on this computer, then serve this folder's parent (for example <code>python3 -m http.server</code>) and open <code>/examples/</code> in Chrome, Edge, or Firefox. Safari on a Mac works after <b>Set up</b> beside <b>Safari</b> on TapPrint's Settings tab.</p>
 <p id="line" role="status" aria-live="polite">Checking...</p>
 <button id="pair">Pair</button>
+<button id="unpair">Unpair</button>
 <button id="print">Print</button>
 <button id="drawer">Print + drawer</button>
 <label><input type="checkbox" id="dither"> Dither (photos)</label>
@@ -87,6 +88,7 @@ document.getElementById("pair").onclick = async () => {
   line.textContent = "Click Allow in the TapPrint window...";
   await run(() => till.pair());
 };
+document.getElementById("unpair").onclick = () => run(() => till.unpair());
 const printWith = (drawer) => () => run(async () => {
   const options = { drawer, dither: document.getElementById("dither").checked };
   if (!till.isPaired()) await till.pair();

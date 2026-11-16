@@ -1,6 +1,12 @@
 export interface TapPrintOptions {
   /** Port TapPrint listens on. Default 9240. */
   port?: number;
+  /**
+   * `false`: plain HTTP on `port`. `true`: HTTPS on `port + 1`, which TapPrint
+   * serves on macOS for Safari. `"auto"` (default): whichever answers, plain
+   * HTTP first.
+   */
+  secure?: boolean | "auto";
   /** A manual pairing code. Skips browser pairing. */
   code?: string;
   /** localStorage key for the site code. Default "tapprint.code". */
@@ -42,6 +48,10 @@ export type TapPrintReason =
   | "unsupported_type"
   | "raw_disabled"
   | "unauthorized"
+  /** `unpair()` was called with a code that is not this site's own. */
+  | "not_paired"
+  /** The page is on plain http and this till only allows https websites. */
+  | "insecure_origin"
   | "pair_denied"
   | "pair_timeout"
   | "pair_busy"
@@ -49,6 +59,8 @@ export type TapPrintReason =
   | "pair_failed"
   /** Nothing was printed. Load paper and print again. */
   | "paper_out"
+  /** Too many receipts are waiting for the printer. Nothing was printed. */
+  | "printer_busy"
   /** Part of the job may have printed. Printing again may give two receipts. */
   | "maybe_printed"
   | "printer_error"
@@ -61,12 +73,18 @@ export class TapPrintError extends Error {
   /** HTTP status, or 0 when TapPrint could not be reached. */
   status: number;
   reason: TapPrintReason;
+  /**
+   * Why TapPrint was unreachable, when the browser tells. Unset when TapPrint
+   * is simply not running, and for every other reason.
+   */
+  detail?: "insecure_page" | "blocked_by_csp" | "permission_denied";
 }
 
 export class TapPrint {
   constructor(options?: TapPrintOptions);
   status(): Promise<TapPrintStatus>;
   pair(): Promise<void>;
+  unpair(): Promise<void>;
   isPaired(): boolean;
   forget(): void;
   print(source: Blob | HTMLCanvasElement | OffscreenCanvas, options?: PrintOptions): Promise<void>;

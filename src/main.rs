@@ -12,9 +12,13 @@ mod model;
 mod notice;
 mod print;
 mod raster;
-#[cfg(target_os = "macos")]
+// Only macOS serves HTTPS. Other Unix systems build it for the tests alone,
+// so the relay is checked wherever the tests run.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod tls;
 mod ui;
+mod update;
 mod usb;
 
 use std::process::ExitCode;
@@ -34,6 +38,8 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     autostart::refresh();
+    update::tidy();
+    update::watch(Arc::clone(&shared));
     ui::run(shared);
     ExitCode::SUCCESS
 }

@@ -28,6 +28,9 @@ const UNANSWERED_FOR: Duration = Duration::from_secs(60);
 /// After any No or timeout, no site may ask for this long. One page can own
 /// many origins, and must not be able to keep a prompt up by rotating them.
 const PROMPT_GAP: Duration = Duration::from_secs(15);
+/// Start of the status shown when USB devices could not be listed.
+const USB_SCAN_FAILED: &str = "Could not look for USB printers";
+const TYPE_ADDRESS: &str = "Enter the printer's address below";
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
@@ -63,6 +66,8 @@ impl JobError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairError {
     BadOrigin,
+    /// The site is on plain http and this till only allows https sites.
+    Insecure,
     Busy,
     Blocked,
     Denied,
@@ -138,6 +143,10 @@ struct FileConfig {
     drawer_pin: u8,
     drawer_on_ms: u16,
     drawer_off_ms: u16,
+    /// Refuse websites on plain http, except pages on this computer.
+    https_only: bool,
+    /// Ask GitHub once a day whether a newer TapPrint exists.
+    check_updates: bool,
     sites: Vec<Site>,
 }
 
@@ -155,6 +164,8 @@ impl Default for FileConfig {
             drawer_pin: 2,
             drawer_on_ms: 50,
             drawer_off_ms: 50,
+            https_only: false,
+            check_updates: true,
             sites: Vec::new(),
         }
     }
@@ -187,6 +198,13 @@ pub struct Snapshot {
     pub last_job: Option<String>,
     pub allow_raw: bool,
     pub drawer: [u8; 5],
+    /// The printer connector pin the drawer is wired to: 2 or 5.
+    pub drawer_pin: u8,
+    /// Only https websites, and pages on this computer, may print.
+    pub https_only: bool,
+    pub check_updates: bool,
+    /// A newer release, once a check has found one.
+    pub update: Option<crate::update::Release>,
     /// Origins allowed to print with their own code.
     pub sites: Vec<String>,
     /// A site waiting for the cashier.
@@ -202,6 +220,8 @@ pub struct PairRequest {
     pub client: String,
     /// The origin can already print. A second request is unusual, so the window warns.
     pub known: bool,
+    /// The site is on plain http, so someone on its network could alter the page.
+    pub insecure: bool,
     /// Whole seconds until the page stops waiting.
     pub seconds_left: u64,
 }
@@ -233,6 +253,7 @@ struct State {
     blocked: Vec<(String, Instant)>,
     /// No site may ask before this time. See `PROMPT_GAP`.
     quiet_until: Option<Instant>,
+    update: Option<crate::update::Release>,
 }
 
 struct PendingPair {
@@ -297,6 +318,7 @@ impl Shared {
                 pair_serial: 0,
                 blocked: Vec::new(),
                 quiet_until: None,
+                update: None,
             }),
             pair_answered: Condvar::new(),
             printing: Mutex::new(()),
@@ -345,6 +367,10 @@ impl Shared {
                 state.config.drawer_on_ms,
                 state.config.drawer_off_ms,
             ),
+            drawer_pin: state.config.drawer_pin,
+            https_only: state.config.https_only,
+            check_updates: state.config.check_updates,
+            update: state.update.clone(),
             sites: state
                 .config
                 .sites
@@ -364,6 +390,7 @@ impl Shared {
                         .sites
                         .iter()
                         .any(|site| site.origin == pending.origin),
+                    insecure: insecure_origin(&pending.origin),
                     seconds_left: pending
                         .deadline
                         .saturating_duration_since(Instant::now())
@@ -465,7 +492,7 @@ impl Shared {
                 state.tone = Tone::Ready;
                 state.status = "Ready to print".to_string();
             }
-            if state.status.starts_with("USB: ") {
+            if state.status.starts_with(USB_SCAN_FAILED) {
                 state.tone = Tone::Ready;
                 state.status = "Ready to print".to_string();
             }
@@ -477,8 +504,35 @@ impl Shared {
         }
     }
 
+    /// The USB scan failed. Only a till that prints over USB is told: on a
+    /// network printer the message would be noise, repeated every second.
     pub fn note_usb_error(&self, error: &str) {
-        self.set_status(Tone::Problem, format!("USB: {error}"));
+        let mut state = self.lock();
+        state.printers.clear();
+        // The scan ran, so the window stops saying it is still looking.
+        state.listed = true;
+        // The scan repeats every second. It must not wipe out another
+        // problem the person has not read yet, such as a failed update.
+        let other_problem =
+            state.tone == Tone::Problem && !state.status.starts_with(USB_SCAN_FAILED);
+        if state.config.transport == Transport::Usb && state.tone != Tone::Busy && !other_problem {
+            state.tone = Tone::Problem;
+            state.status = format!("{USB_SCAN_FAILED} ({error}).");
+        }
+    }
+
+    /// Drawers are wired to pin 2 or pin 5 of the printer's drawer socket.
+    pub fn set_drawer_pin(&self, pin: u8) {
+        if !matches!(pin, 2 | 5) {
+            return;
+        }
+        {
+            let mut state = self.lock();
+            state.config.drawer_pin = pin;
+            state.tone = Tone::Ready;
+            state.status = format!("The drawer opens on pin {pin}");
+        }
+        let _ = self.persist();
     }
 
     pub fn set_paper(&self, paper: Paper) {
@@ -521,17 +575,24 @@ impl Shared {
         self.persist()
     }
 
-    /// Use the address already stored, without reading the text fields.
+    /// Switch to the network printer, using the address already stored. With
+    /// no usable address yet, still switch: the window then shows the address
+    /// fields, which is the only place the address can be typed.
     pub fn use_saved_network(&self) -> Result<(), String> {
-        let (host, port) = {
-            let state = self.lock();
-            (state.config.tcp_host.clone(), state.config.tcp_port)
-        };
-        check_host(host.trim())?;
-        if self.set_transport(Transport::Tcp).is_ok() {
-            self.set_status(Tone::Ready, format!("Using network printer {host}:{port}"));
+        {
+            let mut state = self.lock();
+            state.config.transport = Transport::Tcp;
+            state.tone = Tone::Ready;
+            state.status = if check_host(state.config.tcp_host.trim()).is_ok() {
+                format!(
+                    "Using network printer {}:{}",
+                    state.config.tcp_host, state.config.tcp_port
+                )
+            } else {
+                TYPE_ADDRESS.to_string()
+            };
         }
-        Ok(())
+        self.persist()
     }
 
     pub fn rotate_code(&self) -> Result<(), String> {
@@ -555,6 +616,9 @@ impl Shared {
         let Some(origin) = origin.and_then(normalized_origin) else {
             return false;
         };
+        if state.config.https_only && insecure_origin(&origin) {
+            return false;
+        }
         state
             .config
             .sites
@@ -573,6 +637,9 @@ impl Shared {
         let origin = normalized_origin(origin).ok_or(PairError::BadOrigin)?;
         let deadline = Instant::now() + wait;
         let mut state = self.lock();
+        if state.config.https_only && insecure_origin(&origin) {
+            return Err(PairError::Insecure);
+        }
         let now = Instant::now();
         state.blocked.retain(|(_, until)| *until > now);
         if state.blocked.iter().any(|(blocked, _)| *blocked == origin)
@@ -691,6 +758,44 @@ impl Shared {
             state.config.sites.retain(|site| site.origin != origin);
             state.tone = Tone::Ready;
             state.status = format!("{origin} can no longer print");
+        }
+        let _ = self.persist();
+    }
+
+    /// What the latest check found: a newer release, or none.
+    pub fn set_update(&self, update: Option<crate::update::Release>) {
+        self.lock().update = update;
+    }
+
+    pub fn set_check_updates(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.check_updates = on;
+            if !on {
+                state.update = None;
+            }
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "TapPrint will look for updates".to_string()
+            } else {
+                "TapPrint will not look for updates".to_string()
+            };
+        }
+        let _ = self.persist();
+    }
+
+    /// With this on, a website on plain http can neither pair nor print.
+    /// Pages on this computer are not affected.
+    pub fn set_https_only(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.https_only = on;
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "Only secure (https) websites may print".to_string()
+            } else {
+                "Websites on http may print too".to_string()
+            };
         }
         let _ = self.persist();
     }
@@ -854,6 +959,27 @@ fn normalized_origin(origin: &str) -> Option<String> {
     allowed.then_some(origin)
 }
 
+/// A normalized origin on plain http that is not this computer. Browsers
+/// treat `http://localhost` as secure, because it never leaves the machine.
+/// Anywhere else, http lets someone on the network change the page.
+fn insecure_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return false;
+    };
+    let host = match rest.strip_prefix('[') {
+        // `[::1]:3000`
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => rest.split(':').next().unwrap_or_default(),
+    };
+    let local = host == "localhost"
+        || host.ends_with(".localhost")
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|address| address.is_loopback());
+    !local
+}
+
 fn pairing_code() -> Result<String, String> {
     let mut bytes = [0u8; CODE_BYTES];
     getrandom::fill(&mut bytes)
@@ -959,8 +1085,7 @@ fn config_path() -> PathBuf {
     config_root().join(folder).join("config.json")
 }
 
-/// The folder holding the settings file and the local certificate.
-#[cfg(target_os = "macos")]
+/// The folder holding the settings file and, on macOS, the local certificate.
 pub fn data_dir() -> PathBuf {
     let mut path = config_path();
     path.pop();
@@ -1165,6 +1290,65 @@ mod tests {
     }
 
     #[test]
+    fn network_can_be_chosen_before_any_address_is_saved() {
+        // The address fields only show once Network is chosen. Refusing the
+        // switch for lack of an address left no way to type the first one.
+        let shared = Shared::load_from(isolated("first-network"), None).unwrap();
+        shared.use_saved_network().unwrap();
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.transport, Transport::Tcp);
+        assert_eq!(snapshot.tone, Tone::Ready);
+        assert_eq!(snapshot.status, TYPE_ADDRESS);
+
+        shared.set_network("192.168.1.20", 9100).unwrap();
+        shared.set_transport(Transport::Usb).unwrap();
+        shared.use_saved_network().unwrap();
+        assert_eq!(
+            shared.snapshot().status,
+            "Using network printer 192.168.1.20:9100"
+        );
+    }
+
+    #[test]
+    fn a_failed_usb_scan_is_only_shown_to_a_usb_till() {
+        let shared = Shared::load_from(isolated("usb-scan"), None).unwrap();
+        shared.note_usb_error("access denied");
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.tone, Tone::Problem);
+        assert!(snapshot.status.contains("access denied"));
+        // The scan ran, so the window does not say it is still looking.
+        assert!(snapshot.listed);
+        // A scan that works again clears the message.
+        shared.set_printers(Vec::new());
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+
+        // Another problem on screen is not replaced by the repeating scan.
+        shared.set_status(Tone::Problem, "the update could not be installed");
+        shared.note_usb_error("access denied");
+        assert_eq!(
+            shared.snapshot().status,
+            "The update could not be installed"
+        );
+
+        // A till on a network printer never hears about USB.
+        shared.set_network("192.168.1.20", 9100).unwrap();
+        shared.note_usb_error("access denied");
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+    }
+
+    #[test]
+    fn the_drawer_pin_can_be_changed_and_is_kept() {
+        let path = isolated("drawer-pin");
+        let shared = Shared::load_from(path.clone(), None).unwrap();
+        assert_eq!(shared.snapshot().drawer_pin, 2);
+        shared.set_drawer_pin(5);
+        shared.set_drawer_pin(9); // not a pin a drawer can be on
+        let reloaded = Shared::load_from(path, None).unwrap().snapshot();
+        assert_eq!(reloaded.drawer_pin, 5);
+        assert_eq!(reloaded.drawer[2], 1);
+    }
+
+    #[test]
     fn a_different_model_is_never_picked_up_without_asking() {
         // The kitchen printer plugged in while the receipt printer is away
         // must not start getting receipts on its own.
@@ -1272,6 +1456,67 @@ mod tests {
         assert!(reloaded.authorize(Some("https://shop.example"), &code));
         reloaded.remove_site("https://shop.example");
         assert!(!reloaded.authorize(Some("https://shop.example"), &code));
+    }
+
+    #[test]
+    fn plain_http_is_insecure_except_on_this_computer() {
+        for origin in [
+            "http://192.168.1.10",
+            "http://till.local:8080",
+            "http://shop.example",
+            "http://localhost.evil.example",
+        ] {
+            assert!(insecure_origin(origin), "{origin}");
+        }
+        for origin in [
+            "https://shop.example",
+            "http://localhost",
+            "http://localhost:3000",
+            "http://app.localhost:3000",
+            "http://127.0.0.1:5173",
+            "http://[::1]:3000",
+        ] {
+            assert!(!insecure_origin(origin), "{origin}");
+        }
+    }
+
+    #[test]
+    fn an_http_site_is_flagged_and_can_be_shut_out() {
+        // Some shops run the till from an in-house http server, so http is
+        // allowed by default. The prompt says so, and one switch refuses it.
+        let shared = std::sync::Arc::new(Shared::load_from(isolated("http-site"), None).unwrap());
+        let watcher = {
+            let shared = std::sync::Arc::clone(&shared);
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    if let Some(request) = shared.snapshot().pair_request {
+                        shared.answer_pair(request.serial, true);
+                        return request.insecure;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                panic!("no pairing request showed up");
+            })
+        };
+        let code = shared
+            .request_pair("http://192.168.1.10", "x", Duration::from_secs(5))
+            .unwrap();
+        assert!(watcher.join().unwrap(), "the prompt did not flag http");
+        assert!(shared.authorize(Some("http://192.168.1.10"), &code));
+
+        shared.set_https_only(true);
+        // The code it already holds stops working, and it cannot ask again.
+        assert!(!shared.authorize(Some("http://192.168.1.10"), &code));
+        assert_eq!(
+            shared.request_pair("http://192.168.1.10", "x", Duration::from_secs(5)),
+            Err(PairError::Insecure)
+        );
+        // Nobody was asked, so nothing is on screen.
+        assert!(shared.snapshot().pair_request.is_none());
+
+        // Turned off again, the same code works: nothing was thrown away.
+        shared.set_https_only(false);
+        assert!(shared.authorize(Some("http://192.168.1.10"), &code));
     }
 
     #[test]

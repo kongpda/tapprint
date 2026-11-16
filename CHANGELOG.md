@@ -2,10 +2,12 @@
 
 ## 0.1.0
 
+`0.1.0-rc.1` is a test build of this release. It has not been tried on real printers yet.
+
 First public release.
 
 - Tray and menu-bar app for macOS, Windows, and Linux.
-- Local HTTP API on `127.0.0.1:9240`: `GET /v1/status`, `POST /v1/pair`, `POST /v1/print`.
+- Local HTTP API on `127.0.0.1:9240`: `GET /v1/status`, `POST /v1/pair`, `POST /v1/unpair`, `POST /v1/print`.
 - Prints PNG receipts to USB (printer class) and network (port 9100) ESC/POS thermal printers. No vendor driver and no print dialog.
 - One-click pairing: each site gets its own code bound to its origin, approved in the TapPrint window. Allowed sites can be removed there. Each pairing issues a fresh code, and the window warns when an allowed site asks again. A manual pairing code works for curl, servers, and kiosks.
 - Optional raw ESC/POS mode (off by default).
@@ -25,4 +27,22 @@ First public release.
 - A second copy of the app no longer rewrites the settings file before it finds the port taken.
 - The client reads the stored code on every call, so a code paired in another tab is used and is not wiped by an old one.
 - Safari support on macOS: TapPrint also answers on `https://127.0.0.1:9241` with its own loopback-only certificate. Settings > Set up Safari asks macOS to trust it. Chrome and Edge keep using plain HTTP. The HTTPS front uses rustls 0.23.
-- `POST /v1/unpair` lets a site drop its own pairing. The browser client has `disconnectTapPrint`.
+- `POST /v1/unpair` lets a site drop its own pairing. The browser client has `unpair()`.
+- The browser client works in Safari: by default it tries plain HTTP, then the HTTPS port, and remembers which one answered. `secure: true` or `false` fixes the choice.
+- The HTTPS relay no longer polls. An idle Safari connection costs nothing, and replies are no longer held back by up to 40 ms.
+- A certificate and key that no longer fit together are replaced at start. The certificate no longer lists `::1`.
+- New `503` `printer_busy`: at most six receipts wait for the printer, so status and pairing stay answered while a printer stalls.
+- The window footer counts jobs, not receipts, because test slips and drawer pulses are counted too.
+- The Mac app says why it uses the local network (`NSLocalNetworkUsageDescription`), for the macOS 15 prompt when a network printer is used.
+- CI runs clippy on macOS, Windows, and Linux, builds the Mac bundle, and tests the browser client.
+- Fixed: on a new install, choosing **Network** did nothing, so a network printer's address could not be typed in the window.
+- The window has a **Cash drawer** setting for pin 2 or pin 5. It used to need a settings-file edit.
+- A failed USB scan says "Could not look for USB printers" instead of a bare error, and is no longer shown to a till that prints over the network.
+- Clearer wording in the window, and section headings in one style.
+- The window is redesigned: smaller, one screen per tab with no scrolling, switches and segmented choices in place of rows of buttons, and help text behind an (i) beside each setting.
+- **Find printers** looks for network printers, so nobody has to know an IP address. Choosing **Network** for the first time starts it, and one click on a result saves it.
+- When TapPrint cannot be reached, the client says why if the browser tells: the page is not on HTTPS, the site's Content-Security-Policy blocks it, or the person blocked the site (`error.detail`).
+- New guide for going live on a real website (`docs/deploying.md`).
+- The pairing prompt warns in red when the site is on plain http (other than this computer). A new **Only secure websites** switch refuses such sites (`403` `insecure_origin`). It is off by default.
+- Updates: TapPrint checks GitHub Releases once a day and shows a newer version in the window. **Update** downloads it, checks its signature, swaps it in and restarts. Nothing is installed without a click. **Check for updates** in Settings turns the check off.
+- Releases carry the bare program for Windows and Linux beside the archives, and a signed `SHA256SUMS` when the signing key is set up.

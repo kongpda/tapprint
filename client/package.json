@@ -1,6 +1,6 @@
 {
   "name": "tapprint-client",
-  "version": "0.1.0",
+  "version": "0.1.0-rc.1",
   "description": "Browser client for the TapPrint silent receipt print helper.",
   "type": "module",
   "main": "tapprint.js",
@@ -14,5 +14,8 @@
   "files": ["tapprint.js", "tapprint.d.ts", "README.md"],
   "license": "MIT",
   "repository": "https://github.com/kongpda/tapprint",
-  "private": true
+  "private": true,
+  "scripts": {
+    "test": "node --test tapprint.test.mjs"
+  }
 }

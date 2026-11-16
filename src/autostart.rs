@@ -33,7 +33,7 @@ pub fn refresh() {
 
 /// `/Applications/TapPrint.app` when running from a bundle, else the binary.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn app_bundle(program: &Path) -> Option<PathBuf> {
+pub fn app_bundle(program: &Path) -> Option<PathBuf> {
     let macos = program.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;
@@ -214,6 +214,10 @@ mod platform {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        }
+        // `refresh` runs on every start. Leave an entry that is already right.
+        if fs::read_to_string(&path).is_ok_and(|current| current == body) {
+            return Ok(());
         }
         fs::write(&path, body)
             .map_err(|error| format!("could not write {}: {error}", path.display()))

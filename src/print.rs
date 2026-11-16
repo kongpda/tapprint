@@ -5,8 +5,9 @@
 //! cannot scan the network.
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::escpos;
@@ -31,6 +32,70 @@ fn list_printers(shared: &Shared) {
         ),
         Err(error) => shared.note_usb_error(&error),
     }
+}
+
+/// The usual raw printing port.
+pub const RAW_PORT: u16 = 9100;
+/// How long one address gets to answer. A printer on the same network
+/// answers in a few milliseconds.
+const FIND_WAIT: Duration = Duration::from_millis(400);
+const FIND_THREADS: usize = 64;
+
+/// Look for printers on this computer's own network, so nobody has to know
+/// an IP address. Tries port 9100 on the 254 addresses beside this
+/// computer's. Only ever started from the window, never by a web page, and
+/// only on a private network.
+pub fn find_network_printers() -> Vec<String> {
+    let Some(here) = local_ipv4().filter(Ipv4Addr::is_private) else {
+        return Vec::new();
+    };
+    let [a, b, c, _] = here.octets();
+    let neighbours: Vec<Ipv4Addr> = (1..=254)
+        .map(|last| Ipv4Addr::new(a, b, c, last))
+        .filter(|address| *address != here)
+        .collect();
+    answering(&neighbours, RAW_PORT, FIND_WAIT)
+        .iter()
+        .map(Ipv4Addr::to_string)
+        .collect()
+}
+
+/// The address this computer uses to reach its network. Nothing is sent:
+/// choosing a route for a UDP socket is enough to learn it.
+fn local_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    // 192.0.2.1 is reserved for documentation, so it is never a real host.
+    socket.connect("192.0.2.1:9").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(address) => Some(address),
+        IpAddr::V6(_) => None,
+    }
+}
+
+/// The addresses that accept a connection on `port`, in order.
+fn answering(addresses: &[Ipv4Addr], port: u16, wait: Duration) -> Vec<Ipv4Addr> {
+    let next = AtomicUsize::new(0);
+    let found = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..FIND_THREADS.min(addresses.len()) {
+            scope.spawn(|| {
+                while let Some(address) = addresses.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let target = SocketAddr::new(IpAddr::V4(*address), port);
+                    if TcpStream::connect_timeout(&target, wait).is_ok() {
+                        found
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push(*address);
+                    }
+                }
+            });
+        }
+    });
+    let mut found = found
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    found.sort();
+    found
 }
 
 /// What the page asked for besides the image.
@@ -275,6 +340,25 @@ fn tcp_paper_out(stream: &mut TcpStream) -> Option<bool> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[test]
+    fn the_search_finds_only_addresses_that_answer_on_the_printer_port() {
+        // Nobody at a till knows the printer's IP address. The search must
+        // list the one that answers and leave out the ones that do not.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = silent.local_addr().unwrap().port();
+        drop(silent);
+        let here = Ipv4Addr::LOCALHOST;
+        let wait = Duration::from_millis(300);
+        assert_eq!(answering(&[here], port, wait), [here]);
+        assert!(answering(&[here], closed, wait).is_empty());
+        assert!(answering(&[], port, wait).is_empty());
+        // Many addresses, few threads' worth of work each: none is skipped.
+        let many = vec![here; 40];
+        assert_eq!(answering(&many, port, wait).len(), 40);
+    }
 
     #[test]
     fn an_ipv6_address_typed_with_brackets_reaches_the_printer() {

@@ -19,22 +19,26 @@ What it defends against:
 - **Other computers.** It listens on `127.0.0.1` only.
 - **DNS rebinding.** The `Host` header must be `127.0.0.1` or `localhost`.
 - **Unwanted sites.** A site needs a code bound to its `Origin`, granted by the person at the till in the TapPrint window. Denied origins are blocked for 10 minutes, unanswered ones for 1 minute, and one pairing request waits at a time. After any refusal or timeout, no site can ask for 15 s. This slows a page that keeps asking, but does not stop it. The person at the till should close such a page. Each pairing issues a fresh code and revokes the old one.
+- **Sites on plain http.** A page served over `http://` can be altered on its way to the till. The pairing prompt says so in red for any http site that is not this computer. **Only secure websites** in Settings refuses such sites: they cannot pair, and codes they hold stop working. It is off by default, because some shops serve the till from an in-house http address.
+- **A forged update.** TapPrint asks GitHub once a day whether a newer release exists (this can be turned off in Settings) and never installs anything without a click. It installs only a download whose checksum is listed in a `SHA256SUMS` signed with the project's key, and the signature must name the exact version on offer, so an old release cannot be replayed as a new one. A copy built without the key does not install updates at all. It opens the download page.
 - **Printer reconfiguration.** Raw ESC/POS is off unless the person at the till turns it on.
-- **LAN scanning.** The page cannot choose the printer address.
+- **LAN scanning.** The page cannot choose the printer address. The window's **Find printers** does look for port 9100 on the addresses beside this computer's own, but only when the person at the till asks for it in the window, only on a private network, and no web page can start it or read its result.
 - **Timing attacks on codes.** Codes are compared in constant time.
 - **Local file disclosure.** The config file is mode 0600 on macOS and Linux.
+- **A trusted certificate being misused.** For Safari on macOS, TapPrint makes its own certificate and, when the person at the till sets up Safari in the window and approves the macOS prompt, adds it to that user's keychain as trusted for TLS. The certificate names only `127.0.0.1` and `localhost`, is not a certificate authority, and lasts 800 days. Its key never leaves the settings folder and is mode 0600. So the trust it adds cannot be used to impersonate any website. The HTTPS port is bound to `127.0.0.1` and passes every request to the same checks as the plain port.
 
 What it does not defend against:
 
+- Whoever holds the update signing key. They can sign a release that tills will install when someone clicks Update.
 - Anyone with access to the till's user account, who can read the config file and the manual pairing code.
-- Malware running as the same user. It can talk to the loopback port.
+- Malware running as the same user. It can talk to the loopback port. On macOS it can also read the certificate key and answer as `127.0.0.1` or `localhost` to this user's browsers, which gains it nothing it did not already have.
 - Programs on this computer faking `Origin`. Only browsers set `Origin` honestly. Any local program can send a pairing request in a known site's name, so the person at the till must still decide. The window warns when an already allowed site asks again.
 - A site the person at the till allowed. It can print receipts, and can send raw commands if raw mode is on.
 - Anyone holding the manual pairing code. It works from any origin. Keep it private.
 
 ## Known issues in dependencies
 
-Checked with `cargo audit` on 27 October 2026. CI runs it on every push.
+Checked with `cargo audit` on 15 November 2026. CI runs it on every push.
 
 - **tiny_http 0.12 request smuggling (CVE-2026-66752).** tiny_http mishandles `Transfer-Encoding: chunked`, and no fixed release exists. TapPrint refuses any request that has a `Transfer-Encoding` header, so the faulty code never runs. Browsers send `Content-Length` for `fetch` bodies.
 - **libusb 1.0.27 denial of service (CVE-2026-47104, CVE-2026-23679).** TapPrint builds libusb from the source bundled in `libusb1-sys` 0.7.0, and that version is 1.0.27. libusb 1.0.30 fixes both issues. To trigger either one, an attacker must plug a malicious USB device into the till, and the worst result is a crash. TapPrint will move to a fixed libusb when `libusb1-sys` ships one.
