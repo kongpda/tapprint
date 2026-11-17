@@ -174,7 +174,7 @@ fn sync_window(cx: &mut App) {
         let _ = handle.update(cx, |_view, window, _cx| window.request_attention());
     }
     let key = format!(
-        "{:?}|{}|{:?}|{}|{:?}|{}",
+        "{:?}|{}|{:?}|{}|{:?}|{}|{:?}",
         snapshot.tone,
         snapshot.status,
         snapshot.transport,
@@ -185,7 +185,8 @@ fn sync_window(cx: &mut App) {
             .iter()
             .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>()
-            .join(",")
+            .join(","),
+        snapshot.update.as_ref().map(|release| &release.version)
     );
     if let Some(handle) = window {
         let _ = handle.update(cx, |view, _window, cx| {
@@ -239,6 +240,16 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
     {
         items.push(MenuItem::action(
             "A website wants to print. Answer…",
+            OpenWindow,
+        ));
+    }
+    // A till usually runs with the window closed, so the menu says it too.
+    if let Some(release) = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.update.as_ref())
+    {
+        items.push(MenuItem::action(
+            format!("Version {} is ready. Update…", release.version),
             OpenWindow,
         ));
     }
@@ -1271,7 +1282,15 @@ impl TillView {
                         "Check for updates",
                         snapshot.check_updates,
                         cx.listener(|view, _: &ClickEvent, _, cx| {
-                            view.shared.set_check_updates(!view.snapshot.check_updates);
+                            let on = !view.snapshot.check_updates;
+                            view.shared.set_check_updates(on);
+                            if on {
+                                // Look now, not at the next daily check.
+                                let shared = Arc::clone(&view.shared);
+                                let _ = std::thread::Builder::new()
+                                    .name("tapprint-update-now".into())
+                                    .spawn(move || crate::update::check(&shared));
+                            }
                             view.pull(cx);
                         }),
                     )),

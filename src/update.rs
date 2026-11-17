@@ -30,8 +30,11 @@ const LARGEST_BUILD: u64 = 300 * 1024 * 1024;
 /// How long a restarted copy keeps trying to take over the port.
 pub const RESTART_WAIT: Duration = Duration::from_secs(20);
 
-#[cfg(target_os = "macos")]
-const ASSET: &str = "TapPrint-macos-universal.zip";
+// One build per chip, so a Mac only downloads the half it can run.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const ASSET: &str = "TapPrint-macos-arm64.zip";
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const ASSET: &str = "TapPrint-macos-x86_64.zip";
 #[cfg(target_os = "windows")]
 const ASSET: &str = "tapprint-windows-x86_64.exe";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -182,10 +185,16 @@ fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// Only this project's own release pages. The signature is what makes an
+/// update safe; this just keeps the app from being pointed anywhere else.
+fn from_github(address: &str) -> bool {
+    address.starts_with(&format!("{RELEASES_API}/"))
+        || address.starts_with("https://github.com/kongpda/tapprint/releases/download/")
+}
+
 fn fetch(address: &str, limit: u64) -> Result<Vec<u8>, String> {
-    let secure = address.starts_with("https://");
-    if !secure && !cfg!(debug_assertions) {
-        return Err("updates are only fetched over https".to_string());
+    if !cfg!(debug_assertions) && !from_github(address) {
+        return Err("updates are only fetched from TapPrint's page on GitHub".to_string());
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(120)))
@@ -468,6 +477,25 @@ mod tests {
         assert!(sum(forged, SIGNATURE, "0.2.0", "tapprint-linux-x86_64").is_err());
         assert!(sum(SUMS, b"not a signature", "0.2.0", "tapprint-linux-x86_64").is_err());
         assert!(sum(SUMS, SIGNATURE, "0.2.0", "tapprint.exe").is_err());
+    }
+
+    #[test]
+    fn updates_come_only_from_this_projects_github_pages() {
+        assert!(from_github(
+            "https://api.github.com/repos/kongpda/tapprint/releases/latest"
+        ));
+        assert!(from_github(
+            "https://github.com/kongpda/tapprint/releases/download/v0.2.0/SHA256SUMS"
+        ));
+        for elsewhere in [
+            "http://github.com/kongpda/tapprint/releases/download/v0.2.0/SHA256SUMS",
+            "https://github.com/someone-else/tapprint/releases/download/v0.2.0/SHA256SUMS",
+            "https://github.com.evil.example/kongpda/tapprint/releases/download/x",
+            "https://api.github.com/repos/kongpda/tapprint-fork/releases/latest",
+            "https://example.com/tapprint.exe",
+        ] {
+            assert!(!from_github(elsewhere), "{elsewhere}");
+        }
     }
 
     #[test]

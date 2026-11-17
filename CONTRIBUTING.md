@@ -46,7 +46,30 @@ GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-w
 2. Merge to `main` and wait for CI to pass.
 3. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must match the version in `Cargo.toml`.
 
-The Release workflow builds macOS (universal), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The builds are not signed; see "Signing a Mac build" in [docs/building.md](docs/building.md).
+The Release workflow builds macOS (one app for Apple silicon, one for Intel), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The Mac apps are signed only when the secrets under "Signing the Mac app" are set.
+
+## Signing the Mac app
+
+With these five repository secrets, the Release workflow signs the Mac app with your Developer ID and has Apple notarize it. Without them it still releases, with an ad-hoc signature that macOS asks each person to allow once.
+
+Add them under **Settings > Secrets and variables > Actions**:
+
+| Secret | What it is |
+| --- | --- |
+| `MACOS_CERTIFICATE` | Your **Developer ID Application** certificate and its private key, as a `.p12` file, base64-encoded. |
+| `MACOS_CERTIFICATE_PASSWORD` | The password you gave the `.p12` when exporting it. |
+| `APPLE_ID` | The email of your Apple Developer account. |
+| `APPLE_TEAM_ID` | The ten-character Team ID, on the Membership page of developer.apple.com. |
+| `APPLE_APP_PASSWORD` | An app-specific password made at account.apple.com under **Sign-In and Security**. Not your Apple ID password. |
+
+To make the first one:
+
+1. If Keychain Access has no **Developer ID Application** certificate, create one in Xcode: **Settings > Accounts > Manage Certificates > +**.
+2. In Keychain Access, under **My Certificates**, right-click it, choose **Export**, save it as `certificate.p12`, and set a password.
+3. Copy it in base64: `base64 -i certificate.p12 | pbcopy`, and paste that as the secret.
+4. Delete `certificate.p12`. Never commit it.
+
+The signing step fails the release if the certificate is not a Developer ID Application one, or if Apple does not accept the app.
 
 ## Signing updates
 
