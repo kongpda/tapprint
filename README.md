@@ -8,7 +8,7 @@ TapPrint is a tray app for macOS, Windows, and Linux. Your page sends a receipt 
 
 ## Install
 
-1. Download from [Releases](https://github.com/kongpda/tapprint/releases) and open it. Builds are unsigned, so allow it once: **Open Anyway** on macOS (System Settings > Privacy & Security), **More info > Run anyway** on Windows.
+1. Download from [Releases](https://github.com/kongpda/tapprint/releases) and open it. On a Mac, take `arm64` for Apple silicon (M1 and later) or `x86_64` for Intel. Builds are unsigned, so allow it once: **Open Anyway** on macOS (System Settings > Privacy & Security), **More info > Run anyway** on Windows.
 2. Connect the printer.
    - **USB:** set the printer's USB port to **Printer Class**.
    - **Network:** choose **Network**. TapPrint looks for printers on your network; click yours. Or type its address.

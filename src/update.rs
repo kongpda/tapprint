@@ -30,8 +30,11 @@ const LARGEST_BUILD: u64 = 300 * 1024 * 1024;
 /// How long a restarted copy keeps trying to take over the port.
 pub const RESTART_WAIT: Duration = Duration::from_secs(20);
 
-#[cfg(target_os = "macos")]
-const ASSET: &str = "TapPrint-macos-universal.zip";
+// One build per chip, so a Mac only downloads the half it can run.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const ASSET: &str = "TapPrint-macos-arm64.zip";
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const ASSET: &str = "TapPrint-macos-x86_64.zip";
 #[cfg(target_os = "windows")]
 const ASSET: &str = "tapprint-windows-x86_64.exe";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

@@ -32,9 +32,20 @@ jobs:
             exit 1
           fi
 
+  # One app for Apple silicon and one for Intel. Each is about half the size
+  # of a combined one, and a Mac downloads only the half it can run.
   macos:
+    name: macos (${{ matrix.arch }})
     needs: check
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
     env:
       # Whether a Developer ID certificate is set up. Without one the app is
       # signed ad-hoc and macOS asks each person to allow it once.
@@ -45,21 +56,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build both architectures
-        run: |
-          cargo build --release --locked --target aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-      # One bundle recipe for local builds, CI, and releases.
-      - name: Make one binary for both architectures
-        run: |
-          set -eu
-          mkdir -p dist
-          lipo -create -output dist/tapprint \
-            target/aarch64-apple-darwin/release/tapprint \
-            target/x86_64-apple-darwin/release/tapprint
-          chmod 755 dist/tapprint
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       # The certificate goes into a keychain that exists only for this job.
       - name: Load the Developer ID certificate
         if: env.CAN_SIGN == 'true'
@@ -89,8 +90,10 @@ jobs:
       - name: Bundle and sign TapPrint.app
         run: |
           set -eu
-          TAPPRINT_BINARY=dist/tapprint scripts/macos-app.sh
-          lipo -archs dist/TapPrint.app/Contents/MacOS/tapprint
+          # One bundle recipe for local builds, CI, and releases.
+          TAPPRINT_BINARY=target/${{ matrix.target }}/release/tapprint scripts/macos-app.sh
+          # The app must hold exactly the architecture its name promises.
+          test "$(lipo -archs dist/TapPrint.app/Contents/MacOS/tapprint)" = "${{ matrix.arch }}"
           codesign -dv dist/TapPrint.app 2>&1 | grep -E "Authority|Signature|TeamIdentifier" || true
       # Apple scans the app and records that it may run. The ticket is then
       # stapled into the app, so a Mac can check it without being online.
@@ -110,11 +113,11 @@ jobs:
           xcrun stapler staple dist/TapPrint.app
           spctl --assess --type execute --verbose dist/TapPrint.app
       - name: Zip
-        run: ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint-macos-universal.zip
+        run: ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint-macos-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v7
         with:
-          name: macos
-          path: dist/TapPrint-macos-universal.zip
+          name: macos-${{ matrix.arch }}
+          path: dist/TapPrint-macos-${{ matrix.arch }}.zip
 
   windows:
     needs: check

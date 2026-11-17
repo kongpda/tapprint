@@ -47,3 +47,4 @@ First public release.
 - Updates: TapPrint checks GitHub Releases once a day and shows a newer version in the window. **Update** downloads it, checks its signature, swaps it in and restarts. Nothing is installed without a click. **Check for updates** in Settings turns the check off.
 - Releases carry the bare program for Windows and Linux beside the archives, and a signed `SHA256SUMS` when the signing key is set up.
 - The Mac app is signed with a Developer ID and notarized by Apple when the release has the certificate, so macOS opens it without the "could not verify" block. `scripts/install-local.sh` and `scripts/macos-app.sh` sign with `TAPPRINT_SIGN_IDENTITY` when it is set.
+- Mac releases are now two apps, `TapPrint-macos-arm64.zip` for Apple silicon and `TapPrint-macos-x86_64.zip` for Intel, in place of one universal app. Each is about half the size. An update downloads the one that matches the Mac.

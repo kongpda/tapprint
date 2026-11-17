@@ -25,7 +25,7 @@ scripts/macos-app.sh
 open "dist/TapPrint.app"
 ```
 
-The script draws the icon and ad-hoc signs the bundle so this Mac can launch it. Set `TAPPRINT_BINARY=path` to bundle a binary you already built; the release workflow does this with its universal binary. Use `scripts/install-local.sh` to install it. Quit any copy already listening on port 9240 first, including an old Receipt Till, or the new one stops.
+The script draws the icon and ad-hoc signs the bundle so this Mac can launch it. Set `TAPPRINT_BINARY=path` to bundle a binary you already built; the release workflow does this once for Apple silicon and once for Intel. Use `scripts/install-local.sh` to install it. Quit any copy already listening on port 9240 first, including an old Receipt Till, or the new one stops.
 
 **Windows.** Build on a Windows PC. The window's GPU shaders are compiled there, so a build from a Mac does not run. Install Rust and the Visual Studio Build Tools, then run `cargo build --release`. The app is `target\release\tapprint.exe`. It runs without a console window. Left-click the tray icon to open the window and right-click it for the menu.
 
