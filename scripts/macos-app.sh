@@ -3,8 +3,8 @@
 # already built (the release workflow passes a universal one). The Dock icon is the ink tile from
 # scripts/draw-macos-icon.swift, and the window opens in front. A small
 # receipt mark also goes in the menu bar when the bar has room. The ad-hoc
-# signature lets this Mac open the app. Other Macs need the Developer ID
-# steps in docs/building.md.
+# signature lets this Mac open the app. For other Macs, set
+# TAPPRINT_SIGN_IDENTITY to a Developer ID name; see docs/building.md.
 set -eu
 
 [ "$(uname -s)" = Darwin ] || { echo "tapprint: macOS is required" >&2; exit 1; }
@@ -79,9 +79,16 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Local launch only. Developer ID replaces this before the app leaves the machine.
 plutil -lint "$app/Contents/Info.plist"
-codesign --force --sign - "$app" >/dev/null
+# With TAPPRINT_SIGN_IDENTITY set to a "Developer ID Application: ..." name,
+# sign for other Macs: hardened runtime and a timestamp, which notarization
+# requires. Without it, an ad-hoc signature that only this Mac accepts.
+if [ -n "${TAPPRINT_SIGN_IDENTITY:-}" ]; then
+    codesign --force --options runtime --timestamp \
+        --sign "$TAPPRINT_SIGN_IDENTITY" "$app" >/dev/null
+else
+    codesign --force --sign - "$app" >/dev/null
+fi
 codesign --verify "$app"
 
 echo "$app"

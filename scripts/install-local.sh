@@ -22,6 +22,11 @@ Options:
 
 Environment:
   CARGO_TARGET_DIR   Honoured for the Rust build output.
+  TAPPRINT_SIGN_IDENTITY
+                     Sign with this identity from your keychain, such as
+                     "Developer ID Application: Your Name (TEAMID)", instead
+                     of ad-hoc. macOS then keeps the app's permissions
+                     across rebuilds.
   NO_COLOR           Disable coloured output.
 EOF
 }
@@ -133,11 +138,17 @@ step "Building ${APP_NAME} (${SHA})"
 # short version; set it to the source commit.
 "$PLISTBUDDY" -c "Set :CFBundleVersion $SHA" "$SRC_APP/Contents/Info.plist"
 
-# Ad-hoc re-sign: the Info.plist edit invalidates the bundle signature, and
+# Re-sign: the Info.plist edit invalidates the bundle signature, and
 # Gatekeeper needs a valid (even ad-hoc) one to launch a local build.
-codesign --force --sign - "$SRC_APP"
+if [[ -n "${TAPPRINT_SIGN_IDENTITY:-}" ]]; then
+  codesign --force --options runtime --timestamp --sign "$TAPPRINT_SIGN_IDENTITY" "$SRC_APP"
+  SIGNED_AS="signed as ${TAPPRINT_SIGN_IDENTITY}"
+else
+  codesign --force --sign - "$SRC_APP"
+  SIGNED_AS="signed ad-hoc (this Mac only)"
+fi
 codesign --verify "$SRC_APP" || fail "Code signature check failed for the new build."
-ok "Built and signed"
+ok "Built and ${SIGNED_AS}"
 
 # ---- 3. install ------------------------------------------------------------
 

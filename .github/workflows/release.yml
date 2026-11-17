@@ -1,9 +1,9 @@
 name: Release
 
 # Pushing a tag such as v0.1.0 builds all platforms and creates a GitHub
-# Release. The artifacts are UNSIGNED: the macOS app has an ad-hoc signature
-# only, and the Windows exe has no Authenticode signature. See the
-# "Signing a Mac build" section of docs/building.md for how to sign a build yourself.
+# Release. The macOS app is signed with a Developer ID and notarized when the
+# MACOS_CERTIFICATE secret is set, else it has an ad-hoc signature only. The
+# Windows exe has no Authenticode signature. See CONTRIBUTING.md, "Signing".
 
 on:
   push:
@@ -35,6 +35,10 @@ jobs:
   macos:
     needs: check
     runs-on: macos-latest
+    env:
+      # Whether a Developer ID certificate is set up. Without one the app is
+      # signed ad-hoc and macOS asks each person to allow it once.
+      CAN_SIGN: ${{ secrets.MACOS_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,7 +52,7 @@ jobs:
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
       # One bundle recipe for local builds, CI, and releases.
-      - name: Bundle TapPrint.app
+      - name: Make one binary for both architectures
         run: |
           set -eu
           mkdir -p dist
@@ -56,9 +60,57 @@ jobs:
             target/aarch64-apple-darwin/release/tapprint \
             target/x86_64-apple-darwin/release/tapprint
           chmod 755 dist/tapprint
+      # The certificate goes into a keychain that exists only for this job.
+      - name: Load the Developer ID certificate
+        if: env.CAN_SIGN == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -eu
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(uuidgen)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain"
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)
+          if [ -z "$identity" ]; then
+            echo "::error::the certificate in MACOS_CERTIFICATE is not a Developer ID Application certificate"
+            exit 1
+          fi
+          echo "TAPPRINT_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Bundle and sign TapPrint.app
+        run: |
+          set -eu
           TAPPRINT_BINARY=dist/tapprint scripts/macos-app.sh
           lipo -archs dist/TapPrint.app/Contents/MacOS/tapprint
-          ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint-macos-universal.zip
+          codesign -dv dist/TapPrint.app 2>&1 | grep -E "Authority|Signature|TeamIdentifier" || true
+      # Apple scans the app and records that it may run. The ticket is then
+      # stapled into the app, so a Mac can check it without being online.
+      - name: Notarize
+        if: env.CAN_SIGN == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -eu
+          ditto -c -k --keepParent dist/TapPrint.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+            --wait --timeout 30m | tee "$RUNNER_TEMP/notary.log"
+          grep -q "status: Accepted" "$RUNNER_TEMP/notary.log"
+          xcrun stapler staple dist/TapPrint.app
+          spctl --assess --type execute --verbose dist/TapPrint.app
+      - name: Zip
+        run: ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint-macos-universal.zip
       - uses: actions/upload-artifact@v7
         with:
           name: macos

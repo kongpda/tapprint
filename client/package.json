@@ -1,6 +1,6 @@
 {
   "name": "tapprint-client",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Browser client for the TapPrint silent receipt print helper.",
   "type": "module",
   "main": "tapprint.js",

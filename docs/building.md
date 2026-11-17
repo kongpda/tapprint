@@ -40,19 +40,29 @@ cargo build --release
 
 ## Signing a Mac build
 
-The Developer ID Application certificate is what Gatekeeper accepts. Build the app, then sign the bundle (this replaces the ad-hoc signature from `scripts/macos-app.sh`):
+Without a signature Apple knows, macOS blocks a downloaded TapPrint until the person allows it under **System Settings > Privacy & Security**. A build made on the same Mac is not blocked.
+
+You need an Apple Developer account and its **Developer ID Application** certificate in your keychain. The Apple Development and Apple Distribution certificates do not work for this.
+
+To sign a local build, name the certificate:
 
 ```shell
-scripts/macos-app.sh
-codesign --force --deep --options runtime --timestamp \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  "dist/TapPrint.app"
-ditto -c -k --keepParent "dist/TapPrint.app" "dist/TapPrint.zip"
-xcrun notarytool submit "dist/TapPrint.zip" --keychain-profile "notary" --wait
-xcrun stapler staple "dist/TapPrint.app"
+export TAPPRINT_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+scripts/install-local.sh      # or scripts/macos-app.sh
 ```
 
-`notarytool` needs a keychain profile created once with an app-specific Apple ID password. The Apple Development and Apple Distribution certificates do not replace this.
+`security find-identity -v -p codesigning` lists the exact name. A signed build also keeps its macOS permissions, such as local network access, from one build to the next. An ad-hoc build is a new app to macOS each time.
+
+To hand the app to other Macs it must also be notarized:
+
+```shell
+ditto -c -k --keepParent dist/TapPrint.app dist/TapPrint.zip
+xcrun notarytool submit dist/TapPrint.zip --apple-id you@example.com \
+  --team-id TEAMID --password APP-SPECIFIC-PASSWORD --wait
+xcrun stapler staple dist/TapPrint.app
+```
+
+Releases do all of this by themselves once the secrets in [CONTRIBUTING.md](../CONTRIBUTING.md#signing-the-mac-app) are set.
 
 Windows builds want Authenticode, not this certificate. An unsigned exe shows SmartScreen once. A self-signed certificate does not remove the warning. Open-source projects can apply to SignPath Foundation for free signing.
 
