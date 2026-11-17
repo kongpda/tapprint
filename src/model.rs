@@ -148,6 +148,14 @@ struct FileConfig {
     /// Ask GitHub once a day whether a newer TapPrint exists.
     check_updates: bool,
     sites: Vec<Site>,
+    /// Print from KHEvents: this computer's print-station key. Empty while
+    /// not connected. Like the codes above, it is kept in this file only.
+    server_token: String,
+    /// The printer's name and organizer, as khevents.app gave them.
+    server_station: String,
+    server_organizer: String,
+    /// Stop taking server jobs without disconnecting. They wait on the server.
+    server_paused: bool,
 }
 
 impl Default for FileConfig {
@@ -167,9 +175,77 @@ impl Default for FileConfig {
             https_only: false,
             check_updates: true,
             sites: Vec::new(),
+            server_token: String::new(),
+            server_station: String::new(),
+            server_organizer: String::new(),
+            server_paused: false,
         }
     }
 }
+
+/// How the link to khevents.app is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Link {
+    /// Not connected to any organizer.
+    #[default]
+    Off,
+    /// Connected; the first answer has not come yet.
+    Starting,
+    Online,
+    /// The last call failed. TapPrint keeps trying.
+    Offline,
+    /// khevents.app has server printing turned off.
+    Disabled,
+}
+
+/// What happened to one job from the server, for the window's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerOutcome {
+    Printed,
+    /// Nothing reached the paper. The server tries again shortly.
+    Retrying,
+    /// Part of it may have printed. The server never retries this by itself.
+    CheckPaper,
+    Failed,
+}
+
+impl ServerOutcome {
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Printed => "Printed",
+            Self::Retrying => "Will retry",
+            Self::CheckPaper => "Check paper",
+            Self::Failed => "Failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerJob {
+    pub summary: String,
+    pub sender: String,
+    pub outcome: ServerOutcome,
+    pub ago: String,
+}
+
+/// Print from KHEvents, as the window shows it. The key is never included.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServerView {
+    pub connected: bool,
+    pub station: String,
+    pub organizer: String,
+    pub paused: bool,
+    /// Paused on the Printers page, not here.
+    pub paused_there: bool,
+    pub link: Link,
+    /// Why the link is not online, in a sentence.
+    pub note: String,
+    pub jobs: u32,
+    pub recent: Vec<ServerJob>,
+}
+
+/// How many server jobs the window lists.
+const RECENT_SERVER_JOBS: usize = 20;
 
 /// A till page that has called this app. Other computers cannot connect.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +285,7 @@ pub struct Snapshot {
     pub sites: Vec<String>,
     /// A site waiting for the cashier.
     pub pair_request: Option<PairRequest>,
+    pub server: ServerView,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +331,11 @@ struct State {
     /// No site may ask before this time. See `PROMPT_GAP`.
     quiet_until: Option<Instant>,
     update: Option<crate::update::Release>,
+    link: Link,
+    link_note: String,
+    paused_there: bool,
+    server_jobs: u32,
+    recent: Vec<(String, String, ServerOutcome, Instant)>,
 }
 
 struct PendingPair {
@@ -319,6 +401,11 @@ impl Shared {
                 blocked: Vec::new(),
                 quiet_until: None,
                 update: None,
+                link: Link::Off,
+                link_note: String::new(),
+                paused_there: false,
+                server_jobs: 0,
+                recent: Vec::new(),
             }),
             pair_answered: Condvar::new(),
             printing: Mutex::new(()),
@@ -396,7 +483,126 @@ impl Shared {
                         .saturating_duration_since(Instant::now())
                         .as_secs(),
                 }),
+            server: ServerView {
+                connected: !state.config.server_token.is_empty(),
+                station: state.config.server_station.clone(),
+                organizer: state.config.server_organizer.clone(),
+                paused: state.config.server_paused,
+                paused_there: state.paused_there,
+                link: if state.config.server_token.is_empty() {
+                    Link::Off
+                } else {
+                    state.link
+                },
+                note: state.link_note.clone(),
+                jobs: state.server_jobs,
+                recent: state
+                    .recent
+                    .iter()
+                    .map(|(summary, sender, outcome, at)| ServerJob {
+                        summary: summary.clone(),
+                        sender: sender.clone(),
+                        outcome: *outcome,
+                        ago: ago_words(at.elapsed()),
+                    })
+                    .collect(),
+            },
         }
+    }
+
+    /// The print-station key, while connected. Only the station thread reads it.
+    pub fn server_token(&self) -> Option<String> {
+        let state = self.lock();
+        (!state.config.server_token.is_empty()).then(|| state.config.server_token.clone())
+    }
+
+    /// Save the key khevents.app gave for a pairing code.
+    pub fn connect_server(
+        &self,
+        token: &str,
+        station: &str,
+        organizer: &str,
+    ) -> Result<(), String> {
+        {
+            let mut state = self.lock();
+            state.config.server_token = token.to_string();
+            state.config.server_station = station.to_string();
+            state.config.server_organizer = organizer.to_string();
+            state.config.server_paused = false;
+            state.link = Link::Starting;
+            state.link_note = String::new();
+            state.paused_there = false;
+            state.recent.clear();
+            state.server_jobs = 0;
+            state.tone = Tone::Ready;
+            state.status = format!("Connected to {organizer} as {station}");
+        }
+        self.persist()
+    }
+
+    /// Forget the key. `why` goes on the status line.
+    pub fn disconnect_server(&self, why: &str, problem: bool) {
+        {
+            let mut state = self.lock();
+            if state.config.server_token.is_empty() {
+                return;
+            }
+            state.config.server_token = String::new();
+            state.config.server_paused = false;
+            state.link = Link::Off;
+            state.link_note = String::new();
+            state.paused_there = false;
+            state.tone = if problem { Tone::Problem } else { Tone::Ready };
+            state.status = why.to_string();
+        }
+        let _ = self.persist();
+    }
+
+    /// Forget the key only if it is still `token`. A reply to an old key must
+    /// not disconnect a pairing made a moment ago.
+    pub fn drop_server_token(&self, token: &str, why: &str) {
+        if self.server_token().as_deref() == Some(token) {
+            self.disconnect_server(why, true);
+        }
+    }
+
+    pub fn set_server_paused(&self, paused: bool) {
+        {
+            let mut state = self.lock();
+            state.config.server_paused = paused;
+            state.tone = Tone::Ready;
+            state.status = if paused {
+                "Paused: server jobs wait until you turn this back on".to_string()
+            } else {
+                "Taking print jobs from KHEvents".to_string()
+            };
+        }
+        let _ = self.persist();
+    }
+
+    pub fn set_link(&self, link: Link, note: impl Into<String>, paused_there: bool) {
+        let mut state = self.lock();
+        state.link = link;
+        state.link_note = note.into();
+        state.paused_there = paused_there;
+    }
+
+    /// Remember a server job for the window. Nothing here is written to disk.
+    pub fn note_server_job(&self, summary: &str, sender: &str, outcome: ServerOutcome) {
+        let mut state = self.lock();
+        if outcome == ServerOutcome::Printed {
+            state.server_jobs = state.server_jobs.saturating_add(1);
+        }
+        state.recent.insert(
+            0,
+            (
+                summary.to_string(),
+                sender.to_string(),
+                outcome,
+                Instant::now(),
+            ),
+        );
+        state.recent.truncate(RECENT_SERVER_JOBS);
     }
 
     /// Remember a till page on this computer. The label is already bounded.

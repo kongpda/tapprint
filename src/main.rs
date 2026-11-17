@@ -12,6 +12,7 @@ mod model;
 mod notice;
 mod print;
 mod raster;
+mod station;
 // Only macOS serves HTTPS. Other Unix systems build it for the tests alone,
 // so the relay is checked wherever the tests run.
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -40,6 +41,7 @@ fn main() -> ExitCode {
     autostart::refresh();
     update::tidy();
     update::watch(Arc::clone(&shared));
+    station::watch(Arc::clone(&shared));
     ui::run(shared);
     ExitCode::SUCCESS
 }
