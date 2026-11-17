@@ -140,6 +140,10 @@ struct FileConfig {
     usb_id: Option<String>,
     /// Off unless the cashier turns it on. Raw commands can change printer settings.
     allow_raw: bool,
+    /// New installs start with the drawer controls hidden. A file saved
+    /// before this setting existed keeps them.
+    #[serde(default = "drawer_enabled_for_old_files")]
+    drawer_enabled: bool,
     drawer_pin: u8,
     drawer_on_ms: u16,
     drawer_off_ms: u16,
@@ -158,6 +162,10 @@ struct FileConfig {
     server_paused: bool,
 }
 
+fn drawer_enabled_for_old_files() -> bool {
+    true
+}
+
 impl Default for FileConfig {
     fn default() -> Self {
         Self {
@@ -169,6 +177,7 @@ impl Default for FileConfig {
             tcp_port: 9100,
             usb_id: None,
             allow_raw: false,
+            drawer_enabled: false,
             drawer_pin: 2,
             drawer_on_ms: 50,
             drawer_off_ms: 50,
@@ -274,6 +283,8 @@ pub struct Snapshot {
     pub last_job: Option<String>,
     pub allow_raw: bool,
     pub drawer: [u8; 5],
+    /// Show the drawer pin choice and the Open drawer button.
+    pub drawer_enabled: bool,
     /// The printer connector pin the drawer is wired to: 2 or 5.
     pub drawer_pin: u8,
     /// Only https websites, and pages on this computer, may print.
@@ -454,6 +465,7 @@ impl Shared {
                 state.config.drawer_on_ms,
                 state.config.drawer_off_ms,
             ),
+            drawer_enabled: state.config.drawer_enabled,
             drawer_pin: state.config.drawer_pin,
             https_only: state.config.https_only,
             check_updates: state.config.check_updates,
@@ -1006,6 +1018,27 @@ impl Shared {
         let _ = self.persist();
     }
 
+    /// Hides or shows the drawer controls in the window. The drawer command
+    /// over HTTP is not affected.
+    pub fn set_drawer_enabled(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.drawer_enabled = on;
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "Cash drawer controls are shown".to_string()
+            } else {
+                "Cash drawer controls are hidden".to_string()
+            };
+        }
+        let _ = self.persist();
+    }
+
+    /// Forget the till pages listed in the window. A page that calls again is listed again.
+    pub fn clear_clients(&self) {
+        self.lock().clients.clear();
+    }
+
     pub fn set_allow_raw(&self, on: bool) {
         {
             let mut state = self.lock();
@@ -1392,6 +1425,24 @@ pub(crate) fn home_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // An update must not make a working cash drawer vanish for a till that
+    // already saved its settings, while a fresh install starts without one.
+    #[test]
+    fn drawer_controls_stay_for_old_files_and_start_hidden_for_new_ones() {
+        let old: FileConfig = serde_json::from_str(r#"{"paper_mm":80}"#).unwrap();
+        assert!(old.drawer_enabled);
+        assert!(!FileConfig::default().drawer_enabled);
+    }
+
+    #[test]
+    fn clearing_till_pages_empties_the_list() {
+        let shared = Shared::from_parts(FileConfig::default(), PathBuf::new(), None);
+        shared.note_client("KHEvents · Chrome");
+        assert_eq!(shared.snapshot().clients.len(), 1);
+        shared.clear_clients();
+        assert!(shared.snapshot().clients.is_empty());
+    }
 
     fn isolated(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
