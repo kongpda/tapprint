@@ -184,12 +184,16 @@ fn pack_luma(gray: &GrayImage) -> Result<MonoRaster, RasterError> {
 
 const SLIP_TITLE: &str = "TAPPRINT";
 const SLIP_NOTE: &str = "TEST SLIP";
+/// Each glyph dot is this many printed dots square, so the text reads at
+/// arm's length: 20×28 dots, about 3.5 mm tall at 203 dpi.
+const SLIP_SCALE: u32 = 4;
+const SLIP_HEIGHT: u32 = 240;
 
 /// A short slip used by the Test button, so the till can check the head
 /// without a receipt from the browser.
 pub fn test_slip(width_dots: u32) -> MonoRaster {
     let width = width_dots.clamp(8, 2_048);
-    let height = 160u32;
+    let height = SLIP_HEIGHT;
     let stride = width.div_ceil(8) as usize;
     let mut packed = vec![0u8; stride * height as usize];
     let mut draw = |x: u32, y: u32| {
@@ -205,14 +209,14 @@ pub fn test_slip(width_dots: u32) -> MonoRaster {
             draw(x, y);
         }
     }
-    stamp(&mut draw, 16, 24, SLIP_TITLE);
+    stamp(&mut draw, 16, 28, SLIP_TITLE);
     let paper = if width_dots >= DOTS_80MM {
         "80 MM"
     } else {
         "58 MM"
     };
-    stamp(&mut draw, 16, 48, paper);
-    stamp(&mut draw, 16, 80, SLIP_NOTE);
+    stamp(&mut draw, 16, 88, paper);
+    stamp(&mut draw, 16, 148, SLIP_NOTE);
     MonoRaster {
         // At most 2 048 dots, so 256 bytes, which fits.
         width_bytes: u16::try_from(stride).unwrap_or(256),
@@ -228,12 +232,19 @@ fn stamp(draw: &mut impl FnMut(u32, u32), x: u32, y: u32, text: &str) {
             for (row, bits) in glyph.iter().enumerate() {
                 for col in 0..5 {
                     if bits & (1 << (4 - col)) != 0 {
-                        draw(cursor + col, y + row as u32);
+                        for dy in 0..SLIP_SCALE {
+                            for dx in 0..SLIP_SCALE {
+                                draw(
+                                    cursor + col * SLIP_SCALE + dx,
+                                    y + row as u32 * SLIP_SCALE + dy,
+                                );
+                            }
+                        }
                     }
                 }
             }
         }
-        cursor = cursor.saturating_add(6);
+        cursor = cursor.saturating_add(6 * SLIP_SCALE);
     }
 }
 
@@ -349,7 +360,10 @@ mod tests {
         for dots in [DOTS_80MM, DOTS_58MM] {
             let slip = test_slip(dots);
             assert_eq!(u32::from(slip.width_bytes) * 8, dots);
-            assert_eq!(slip.packed.len(), usize::from(slip.width_bytes) * 160);
+            assert_eq!(
+                slip.packed.len(),
+                usize::from(slip.width_bytes) * SLIP_HEIGHT as usize
+            );
             // The top border is solid, so the first row is all black.
             assert!(
                 slip.packed[..usize::from(slip.width_bytes)]
