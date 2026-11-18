@@ -31,6 +31,7 @@ const PROMPT_GAP: Duration = Duration::from_secs(15);
 /// Start of the status shown when USB devices could not be listed.
 const USB_SCAN_FAILED: &str = "Could not look for USB printers";
 const TYPE_ADDRESS: &str = "Enter the printer's address below";
+const NO_PRINTER: &str = "No printer found. Plug in your printer and switch it on.";
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
@@ -426,6 +427,12 @@ impl Shared {
 
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
+        // "Ready" must mean a printer is there. A USB till with an empty scan
+        // is not ready, whatever the last message said.
+        let no_printer = state.tone == Tone::Ready
+            && state.config.transport == Transport::Usb
+            && state.listed
+            && state.printers.is_empty();
         Snapshot {
             port: state.config.port,
             pairing_code: state.config.pairing_code.clone(),
@@ -435,8 +442,16 @@ impl Shared {
             tcp_port: state.config.tcp_port,
             usb_id: state.config.usb_id.clone(),
             listed: state.listed,
-            tone: state.tone,
-            status: state.status.clone(),
+            tone: if no_printer {
+                Tone::Problem
+            } else {
+                state.tone
+            },
+            status: if no_printer {
+                NO_PRINTER.to_string()
+            } else {
+                state.status.clone()
+            },
             config_path: state.path.display().to_string(),
             printers: state.printers.clone(),
             clients: state
@@ -1024,12 +1039,6 @@ impl Shared {
         {
             let mut state = self.lock();
             state.config.drawer_enabled = on;
-            state.tone = Tone::Ready;
-            state.status = if on {
-                "Cash drawer controls are shown".to_string()
-            } else {
-                "Cash drawer controls are hidden".to_string()
-            };
         }
         let _ = self.persist();
     }
@@ -1608,6 +1617,20 @@ mod tests {
     }
 
     #[test]
+    fn ready_needs_a_printer_on_a_usb_till() {
+        let shared = Shared::load_from(isolated("no-printer"), None).unwrap();
+        // Before the first scan the window says it is looking, not that it failed.
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+        shared.set_printers(Vec::new());
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.tone, Tone::Problem);
+        assert_eq!(snapshot.status, NO_PRINTER);
+        // A network printer is not found by the USB scan, so it stays ready.
+        shared.set_network("192.168.1.20", 9100).unwrap();
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
+    }
+
+    #[test]
     fn a_failed_usb_scan_is_only_shown_to_a_usb_till() {
         let shared = Shared::load_from(isolated("usb-scan"), None).unwrap();
         shared.note_usb_error("access denied");
@@ -1618,7 +1641,7 @@ mod tests {
         assert!(snapshot.listed);
         // A scan that works again clears the message.
         shared.set_printers(Vec::new());
-        assert_eq!(shared.snapshot().tone, Tone::Ready);
+        assert_eq!(shared.snapshot().status, NO_PRINTER);
 
         // Another problem on screen is not replaced by the repeating scan.
         shared.set_status(Tone::Problem, "the update could not be installed");
