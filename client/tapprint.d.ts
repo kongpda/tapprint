@@ -53,6 +53,8 @@ export type TapPrintReason =
   /** The page is on plain http and this till only allows https websites. */
   | "insecure_origin"
   | "pair_denied"
+  /** TapPrint runs with no window, so nobody can allow a website. */
+  | "pair_unavailable"
   | "pair_timeout"
   | "pair_busy"
   | "pair_blocked"

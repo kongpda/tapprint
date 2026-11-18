@@ -1,0 +1,32 @@
+[package]
+name = "tapprint-core"
+version = "0.1.0-rc.6"
+edition = "2024"
+rust-version = "1.88"
+description = "Print a PNG receipt to a USB or network ESC/POS thermal printer. No printer driver."
+license = "MIT"
+repository = "https://github.com/kongpda/tapprint"
+homepage = "https://github.com/kongpda/tapprint"
+readme = "README.md"
+keywords = ["thermal-printer", "escpos", "receipt", "pos", "usb"]
+categories = ["hardware-support"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Not imported. Listed only for `vendored`, so rusb links a bundled libusb
+# and nobody needs Homebrew or a system package.
+libusb1-sys = { version = "0.7", features = ["vendored"] }
+rusb = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+
+[package.metadata.cargo-machete]
+# `libusb1-sys` is listed only for `vendored`.
+ignored = ["libusb1-sys"]

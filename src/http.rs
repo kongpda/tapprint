@@ -215,6 +215,11 @@ fn pair_failure(error: &PairError) -> (u16, String, &'static str) {
             "only http and https pages can pair".to_string(),
             "bad_request",
         ),
+        PairError::NoWindow => (
+            403,
+            "this TapPrint runs with no window, so nobody can allow a website. Use its pairing code instead.".to_string(),
+            "pair_unavailable",
+        ),
         PairError::Insecure => (
             403,
             "this till only allows secure (https) websites. Serve the page over https.".to_string(),

@@ -4,7 +4,7 @@
 
 use super::UsbDevice;
 use crate::escpos;
-use crate::model::{Fault, JobError};
+use crate::{Fault, JobError};
 use std::mem::{offset_of, size_of};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HDEVINFO, SP_DEVICE_INTERFACE_DATA,

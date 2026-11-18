@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The "future incompatibility" note from a dependency is not a warning
       # in this crate, so -D warnings does not fail on it.
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -81,7 +81,8 @@ jobs:
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev \
             libudev-dev
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked
+      # The app and the tapprint-core library it is built on.
+      - run: cargo test --workspace --locked
       - if: runner.os == 'Windows'
         run: cargo build --locked
       # A portable program must start on a clean Windows PC. One that needs

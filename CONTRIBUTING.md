@@ -48,6 +48,14 @@ GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-w
 
 The Release workflow builds macOS (one app for Apple silicon, one for Intel), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The Mac apps are signed only when the secrets under "Signing the Mac app" are set.
 
+## The library
+
+`crates/tapprint-core` holds the printing itself: image to dots, ESC/POS, and USB and network sending. The app in `src/` is built on it and adds the window, the HTTP API and pairing. Code that touches a printer belongs in the library. Code that knows about the window or the settings file belongs in the app.
+
+`cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` cover both.
+
+To publish the library on crates.io, so a project can depend on it by version, give both `Cargo.toml` files the same release version (crates.io has its own rules for pre-release versions), then run `cargo publish -p tapprint-core` with your crates.io token. Until then a project can depend on it by git address.
+
 ## Signing the Mac app
 
 With these five repository secrets, the Release workflow signs the Mac app with your Developer ID and has Apple notarize it. Without them it still releases, with an ad-hoc signature that macOS asks each person to allow once.

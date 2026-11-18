@@ -1,6 +1,6 @@
 [package]
 name = "tapprint"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.6"
 edition = "2024"
 # The oldest Rust that builds every dependency (set by gpui-ce).
 rust-version = "1.95"
@@ -19,13 +19,10 @@ gpui-ce = "0.3"
 gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", "menu-state"] }
 gpui_ce_elements = "0.3"
 gpui_ce_platform = "0.3"
-image = { version = "0.25", default-features = false, features = ["png"] }
-# Not imported. Listed only for `vendored`, so rusb links a bundled libusb
-# and the till needs no Homebrew or system package.
-libusb1-sys = { version = "0.7", features = ["vendored"] }
+# The printing itself: image to dots, ESC/POS, USB and network sending.
+tapprint-core = { path = "crates/tapprint-core", version = "0.1.0-rc.6" }
 # Verifies the signature on an update before it is installed.
 minisign-verify = "0.3"
-rusb = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The checksum of a downloaded update.
@@ -45,21 +42,24 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
+[dev-dependencies]
+# Tests build small PNGs to print.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
-    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
-    "Win32_Storage_FileSystem",
     "Win32_System_Console",
-    "Win32_System_IO",
     "Win32_System_Registry",
-    "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 # The Windows program's icon and file details. Does nothing on other systems.
 [build-dependencies]
 winresource = "0.1"
+
+[workspace]
+members = ["crates/tapprint-core"]
 
 [package.metadata.cargo-machete]
 # `gpui-ce` is imported as `gpui`. `libusb1-sys` is listed only for `vendored`.

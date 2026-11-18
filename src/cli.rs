@@ -18,6 +18,8 @@ Usage:
   tapprint                      Open TapPrint.
   tapprint print FILE [options] Print a PNG receipt. FILE can be - for standard input.
   tapprint status               Show whether TapPrint is running and ready.
+  tapprint serve                Run with no window and no tray icon, for another
+                                app to start and print through.
   tapprint --version
   tapprint --help
 
@@ -191,7 +193,7 @@ fn answer(
 
 /// Where messages go. A released Windows build is a window app with no
 /// console of its own, so it borrows the one it was started from.
-mod console {
+pub mod console {
     #[cfg(not(windows))]
     pub fn attach() {}
 

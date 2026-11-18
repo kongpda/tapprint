@@ -15,7 +15,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::escpos;
-use crate::raster::{DOTS_58MM, DOTS_80MM};
+pub use tapprint_core::{Fault, JobError, Paper, check_host};
 
 pub const DEFAULT_PORT: u16 = 9240;
 /// The port network receipt printers answer on, and so the one other apps expect.
@@ -36,40 +36,14 @@ const TYPE_ADDRESS: &str = "Enter the printer's address below";
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
-/// Why a job failed. The caller needs this to know whether a retry is safe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    /// The request itself was wrong. Nothing reached the printer.
-    BadInput,
-    /// The printer reported no paper. Nothing was sent.
-    PaperOut,
-    /// Some bytes reached the printer. Part of the receipt may be on paper.
-    Partial,
-    /// Nothing reached the printer.
-    Failed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JobError {
-    pub fault: Fault,
-    pub message: String,
-}
-
-impl JobError {
-    pub fn new(fault: Fault, message: impl Into<String>) -> Self {
-        Self {
-            fault,
-            message: message.into(),
-        }
-    }
-}
-
 /// Why a site was not given a code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PairError {
     BadOrigin,
     /// The site is on plain http and this till only allows https sites.
     Insecure,
+    /// TapPrint runs with no window, so nobody can be asked.
+    NoWindow,
     Busy,
     Blocked,
     Denied,
@@ -89,36 +63,6 @@ struct Site {
 pub enum Transport {
     Usb,
     Tcp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Paper {
-    Mm80,
-    Mm58,
-}
-
-impl Paper {
-    pub fn dots(self) -> u32 {
-        match self {
-            Self::Mm80 => DOTS_80MM,
-            Self::Mm58 => DOTS_58MM,
-        }
-    }
-
-    pub fn millimetres(self) -> u16 {
-        match self {
-            Self::Mm80 => 80,
-            Self::Mm58 => 58,
-        }
-    }
-
-    pub fn from_millimetres(value: u16) -> Option<Self> {
-        match value {
-            80 => Some(Self::Mm80),
-            58 => Some(Self::Mm58),
-            _ => None,
-        }
-    }
 }
 
 /// How the window should colour the latest status line.
@@ -355,6 +299,8 @@ struct State {
     blocked: Vec<(String, Instant)>,
     /// No site may ask before this time. See `PROMPT_GAP`.
     quiet_until: Option<Instant>,
+    /// Running with no window or tray, started by `tapprint serve`.
+    headless: bool,
     update: Option<crate::update::Release>,
     link: Link,
     link_note: String,
@@ -425,6 +371,7 @@ impl Shared {
                 pair_serial: 0,
                 blocked: Vec::new(),
                 quiet_until: None,
+                headless: false,
                 update: None,
                 link: Link::Off,
                 link_note: String::new(),
@@ -875,6 +822,11 @@ impl Shared {
         if state.config.https_only && insecure_origin(&origin) {
             return Err(PairError::Insecure);
         }
+        // With no window there is no Allow button, and a request would only
+        // hang until it timed out.
+        if state.headless {
+            return Err(PairError::NoWindow);
+        }
         let now = Instant::now();
         state.blocked.retain(|(_, until)| *until > now);
         if state.blocked.iter().any(|(blocked, _)| *blocked == origin)
@@ -995,6 +947,11 @@ impl Shared {
             state.status = format!("{origin} can no longer print");
         }
         let _ = self.persist();
+    }
+
+    /// There is no window: pairing requests are refused at once.
+    pub fn set_headless(&self) {
+        self.lock().headless = true;
     }
 
     /// What the latest check found: a newer release, or none.
@@ -1249,23 +1206,6 @@ pub fn local_access() -> Result<(u16, String), String> {
     }
     let (config, _) = read_config(&path)?;
     Ok((config.port, config.pairing_code))
-}
-
-/// A host name or IP address. Not a URL, so a saved value cannot point at a scheme.
-pub fn check_host(host: &str) -> Result<(), String> {
-    if host.is_empty() {
-        return Err("enter the printer address".to_string());
-    }
-    if host.len() > 253 {
-        return Err("that address is too long".to_string());
-    }
-    let allowed = host
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'));
-    if !allowed {
-        return Err("use a host name or IP address, not a web address".to_string());
-    }
-    Ok(())
 }
 
 /// A pairing result for the status line. A printer problem stays on screen.
@@ -1617,6 +1557,22 @@ mod tests {
         let kept = Shared::load_from(path, None).unwrap().snapshot();
         assert!(kept.share_on && kept.share_lan);
         assert_eq!(kept.share_port, 9101);
+    }
+
+    #[test]
+    fn with_no_window_a_site_is_told_at_once_that_it_cannot_pair() {
+        // Nobody can click Allow. Waiting two minutes to say so would look
+        // like a hang, and the manual code still works.
+        let shared = Shared::load_from(isolated("headless"), None).unwrap();
+        shared.set_headless();
+        let started = Instant::now();
+        assert_eq!(
+            shared.request_pair("https://shop.example", "x", Duration::from_secs(30)),
+            Err(PairError::NoWindow)
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let code = shared.snapshot().pairing_code;
+        assert!(shared.authorize(None, &code));
     }
 
     #[test]

@@ -5804,7 +5804,7 @@ dependencies = [
 
 [[package]]
 name = "tapprint"
-version = "0.1.0-rc.5"
+version = "0.1.0-rc.6"
 dependencies = [
  "getrandom 0.4.3",
  "gpui-ce",
@@ -5812,18 +5812,27 @@ dependencies = [
  "gpui_ce_elements",
  "gpui_ce_platform",
  "image",
- "libusb1-sys",
  "minisign-verify",
  "rcgen",
- "rusb",
  "rustls",
  "serde",
  "serde_json",
  "sha2",
+ "tapprint-core",
  "tiny_http",
  "ureq",
  "windows 0.62.2",
  "winresource",
+]
+
+[[package]]
+name = "tapprint-core"
+version = "0.1.0-rc.6"
+dependencies = [
+ "image",
+ "libusb1-sys",
+ "rusb",
+ "windows 0.62.2",
 ]
 
 [[package]]
