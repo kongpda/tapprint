@@ -148,10 +148,10 @@ struct FileConfig {
     /// Ask GitHub once a day whether a newer TapPrint exists.
     check_updates: bool,
     sites: Vec<Site>,
-    /// Print from KHEvents: this computer's print-station key. Empty while
+    /// Print from a server: this computer's print-station key. Empty while
     /// not connected. Like the codes above, it is kept in this file only.
     server_token: String,
-    /// The printer's name and organizer, as khevents.app gave them.
+    /// The printer's name and organizer, as the print server gave them.
     server_station: String,
     server_organizer: String,
     /// Stop taking server jobs without disconnecting. They wait on the server.
@@ -183,7 +183,7 @@ impl Default for FileConfig {
     }
 }
 
-/// How the link to khevents.app is doing.
+/// How the link to the print server is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Link {
     /// Not connected to any organizer.
@@ -194,7 +194,7 @@ pub enum Link {
     Online,
     /// The last call failed. TapPrint keeps trying.
     Offline,
-    /// khevents.app has server printing turned off.
+    /// The print server has server printing turned off.
     Disabled,
 }
 
@@ -228,7 +228,7 @@ pub struct ServerJob {
     pub ago: String,
 }
 
-/// Print from KHEvents, as the window shows it. The key is never included.
+/// Print from a server, as the window shows it. The key is never included.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServerView {
     pub connected: bool,
@@ -516,7 +516,7 @@ impl Shared {
         (!state.config.server_token.is_empty()).then(|| state.config.server_token.clone())
     }
 
-    /// Save the key khevents.app gave for a pairing code.
+    /// Save the key the print server gave for a pairing code.
     pub fn connect_server(
         &self,
         token: &str,
@@ -574,7 +574,7 @@ impl Shared {
             state.status = if paused {
                 "Paused: server jobs wait until you turn this back on".to_string()
             } else {
-                "Taking print jobs from KHEvents".to_string()
+                format!("Taking print jobs from {}", crate::station::SERVER_NAME)
             };
         }
         let _ = self.persist();

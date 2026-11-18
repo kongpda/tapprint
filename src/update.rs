@@ -19,7 +19,21 @@ use sha2::{Digest, Sha256};
 
 use crate::model::Shared;
 
-const RELEASES_API: &str = "https://api.github.com/repos/kongpda/tapprint";
+/// The GitHub repository whose releases this build offers as updates. A fork
+/// that publishes its own builds sets `TAPPRINT_UPDATE_REPO=owner/name` when
+/// building, and commits its own `release/update-key.pub`.
+const UPDATE_REPO: &str = match option_env!("TAPPRINT_UPDATE_REPO") {
+    Some(repo) => repo,
+    None => "kongpda/tapprint",
+};
+
+fn releases_api() -> String {
+    format!("https://api.github.com/repos/{UPDATE_REPO}")
+}
+
+fn releases_page() -> String {
+    format!("https://github.com/{UPDATE_REPO}/releases")
+}
 const KEY_FILE: &str = include_str!("../release/update-key.pub");
 /// Wait this long after start, so opening the app is never slowed down.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
@@ -97,7 +111,7 @@ fn api() -> String {
     {
         return address;
     }
-    RELEASES_API.to_string()
+    releases_api()
 }
 
 fn public_key() -> Option<minisign_verify::PublicKey> {
@@ -151,8 +165,8 @@ fn newer_release(api: &str, current: &str) -> Result<Option<Release>, String> {
         page: json["html_url"]
             .as_str()
             .filter(|page| page.starts_with("https://github.com/"))
-            .unwrap_or("https://github.com/kongpda/tapprint/releases")
-            .to_string(),
+            .map(str::to_string)
+            .unwrap_or_else(releases_page),
         version,
         files,
     }))
@@ -188,8 +202,8 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// Only this project's own release pages. The signature is what makes an
 /// update safe; this just keeps the app from being pointed anywhere else.
 fn from_github(address: &str) -> bool {
-    address.starts_with(&format!("{RELEASES_API}/"))
-        || address.starts_with("https://github.com/kongpda/tapprint/releases/download/")
+    address.starts_with(&format!("{}/", releases_api()))
+        || address.starts_with(&format!("{}/download/", releases_page()))
 }
 
 fn fetch(address: &str, limit: u64) -> Result<Vec<u8>, String> {

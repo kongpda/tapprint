@@ -1,5 +1,7 @@
-//! Print from KHEvents: print the jobs that sellers send to this computer
-//! through khevents.app, from any phone or laptop.
+//! Print from a server: print the jobs that people send to this computer
+//! through a print server, from any phone or laptop. The server is fixed when
+//! TapPrint is built (`TAPPRINT_PRINT_SERVER`); the default is khevents.app.
+//! The protocol is in `docs/print-station-protocol.md`.
 //!
 //! Pairing swaps a one-time code from the Printers page for a station key.
 //! With it, TapPrint asks for its next job every couple of seconds, downloads
@@ -21,7 +23,50 @@ use serde::Deserialize;
 use crate::model::{Fault, JobError, Link, Paper, ServerOutcome, Shared, Tone};
 use crate::print;
 
-const SERVER: &str = "https://khevents.app";
+/// The print server this build talks to. Set it when building:
+/// `TAPPRINT_PRINT_SERVER=https://print.example.com cargo build --release`.
+/// It is built in, not a setting, so no page or person at the till can send
+/// the station key somewhere else.
+const SERVER: &str = match option_env!("TAPPRINT_PRINT_SERVER") {
+    Some(address) => address,
+    None => "https://khevents.app",
+};
+
+/// The server's name in the window, such as "KHEvents".
+pub const SERVER_NAME: &str = match option_env!("TAPPRINT_PRINT_SERVER_NAME") {
+    Some(name) => name,
+    None => "KHEvents",
+};
+
+/// The key is a password: a release build only sends it over HTTPS.
+const _: () = assert!(
+    starts_with(SERVER.as_bytes(), b"https://"),
+    "TAPPRINT_PRINT_SERVER must start with https://"
+);
+
+const fn starts_with(text: &[u8], prefix: &[u8]) -> bool {
+    if text.len() < prefix.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < prefix.len() {
+        if text[index] != prefix[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// True when this build talks to khevents.app, so the window can name its pages.
+pub fn is_khevents() -> bool {
+    host() == "khevents.app"
+}
+
+/// The server's address without `https://`, for messages: "khevents.app".
+pub fn host() -> &'static str {
+    SERVER.trim_start_matches("https://").trim_end_matches('/')
+}
 const API: &str = "/api/v1/print-station";
 
 /// A slip is at most 1.5 MB on the server. Anything far larger is not ours.
@@ -42,7 +87,7 @@ const DISABLED_WAIT: Duration = Duration::from_secs(60);
 const REMOVED: &str =
     "This printer was removed or connected again elsewhere. Make a new code on the Printers page.";
 
-/// Where khevents.app is. A debug build can point at a local server.
+/// Where the print server is. A debug build can point at a local server.
 pub fn server() -> String {
     if cfg!(debug_assertions)
         && let Ok(address) = std::env::var("TAPPRINT_SERVER")
@@ -242,7 +287,17 @@ fn valid_id(id: &str) -> bool {
     id.len() == 26 && id.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
-/// The name khevents.app shows for this computer.
+/// The key goes into a header and the config file, so only a plain token of
+/// 16 to 128 letters, digits, `_`, `-` or `.` is kept. KHEvents keys start
+/// with `kps_`; other servers may use any such token.
+fn well_formed_key(token: &str) -> bool {
+    (16..=128).contains(&token.len())
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+/// The name the server shows for this computer.
 fn device_name() -> String {
     let os = match std::env::consts::OS {
         "macos" => "Mac",
@@ -265,17 +320,14 @@ pub fn pair(shared: &Shared, client: &Client, typed: &str) -> Result<(), String>
     let paper = shared.snapshot().paper;
     match client.call("POST", "/pair", None, Some(body), MAX_REPLY_BYTES, paper) {
         Reply::Ok(body) => {
-            let paired: Envelope<Paired> = serde_json::from_slice(&body).map_err(|_| {
-                "khevents.app gave an answer TapPrint does not understand".to_string()
-            })?;
+            let paired: Envelope<Paired> = serde_json::from_slice(&body)
+                .map_err(|_| format!("{} gave an answer TapPrint does not understand", host()))?;
             let token = paired.data.token;
-            let well_formed = token.starts_with("kps_")
-                && token.len() <= 128
-                && token
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
-            if !well_formed {
-                return Err("khevents.app gave a key TapPrint does not understand".to_string());
+            if !well_formed_key(&token) {
+                return Err(format!(
+                    "{} gave a key TapPrint does not understand",
+                    host()
+                ));
             }
             shared.connect_server(
                 &token,
@@ -283,21 +335,21 @@ pub fn pair(shared: &Shared, client: &Client, typed: &str) -> Result<(), String>
                 &clean(&paired.data.organizer.name, 80),
             )
         }
-        Reply::Disabled => Err("Server printing is off on khevents.app".to_string()),
+        Reply::Disabled => Err(format!("Server printing is off on {}", host())),
         Reply::Refused(message) => Err(sentence(&message)),
         Reply::Down(message) => Err(sentence(&message)),
         Reply::Unauthorized => Err("That code is wrong or has expired".to_string()),
     }
 }
 
-/// Stop printing for khevents.app on this computer. The server is told when
+/// Stop printing for the server on this computer. The server is told when
 /// it can be reached; the key is forgotten here either way.
 pub fn disconnect(shared: &Shared, client: &Client) {
     if let Some(token) = shared.server_token() {
         let paper = shared.snapshot().paper;
         let _ = client.call("DELETE", "/", Some(&token), None, MAX_REPLY_BYTES, paper);
     }
-    shared.disconnect_server("Disconnected from KHEvents", false);
+    shared.disconnect_server(&format!("Disconnected from {SERVER_NAME}"), false);
 }
 
 fn sentence(text: &str) -> String {
@@ -369,7 +421,10 @@ fn step(
             let Ok(next) = serde_json::from_slice::<Envelope<Next>>(&body) else {
                 shared.set_link(
                     Link::Offline,
-                    "khevents.app gave an answer TapPrint does not understand. Update TapPrint.",
+                    format!(
+                        "{} gave an answer TapPrint does not understand. Update TapPrint.",
+                        host()
+                    ),
                     false,
                 );
                 return LONGEST_WAIT;
@@ -407,7 +462,7 @@ fn settle(shared: &Shared, token: &str, reply: Reply, failures: &mut u32) -> Dur
         Reply::Disabled => {
             shared.set_link(
                 Link::Disabled,
-                "Server printing is off on khevents.app",
+                format!("Server printing is off on {}", host()),
                 false,
             );
             DISABLED_WAIT
@@ -590,6 +645,25 @@ mod tests {
     use std::sync::Mutex;
 
     const ID: &str = "01JD3V4X5Y6Z7A8B9C0D1E2F3G";
+
+    #[test]
+    fn only_a_plain_key_is_kept() {
+        assert!(well_formed_key(&format!("kps_{}", "a1".repeat(24))));
+        assert!(well_formed_key("0123456789abcdef-._"));
+        // Too short to be a real secret.
+        assert!(!well_formed_key("kps_short"));
+        // Would break the Authorization header or the config file.
+        assert!(!well_formed_key("kps_aaaaaaaaaaaaaaaa\r\nX-Evil: 1"));
+        assert!(!well_formed_key("kps_aaaaaaaaaaaaaaaa bbb"));
+        assert!(!well_formed_key(&"a".repeat(129)));
+    }
+
+    #[test]
+    fn the_built_in_server_is_https_and_named() {
+        assert!(server().starts_with("https://") || cfg!(debug_assertions));
+        assert!(!host().is_empty() && !host().contains('/'));
+        assert!(!SERVER_NAME.is_empty());
+    }
 
     fn png() -> Vec<u8> {
         let mut bytes = Vec::new();

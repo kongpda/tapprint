@@ -473,9 +473,32 @@ const HELP_SITES: &str =
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
 const HELP_HTTPS: &str = "Refuses websites that are not on https. Pages on this computer still work. Leave it off only if your till runs from an http address.";
 const HELP_UPDATES: &str = "Asks GitHub once a day whether a newer TapPrint exists. Nothing is installed until you click Update.";
-const HELP_SERVER: &str = "Sellers on any phone or laptop can print on this printer. On khevents.app, an owner or admin opens Console, Printers, Add a printer, and types the code here. Keep TapPrint running.";
-const HELP_SERVER_PAUSE: &str =
-    "While off, jobs wait on khevents.app for up to 15 minutes. Sellers see them waiting.";
+/// The print server's help, named for the server this build talks to.
+fn help_server() -> String {
+    if crate::station::is_khevents() {
+        "Sellers on any phone or laptop can print on this printer. On khevents.app, an owner or admin opens Console, Printers, Add a printer, and types the code here. Keep TapPrint running.".to_string()
+    } else {
+        format!(
+            "Anyone on your team can print on this printer from any phone or laptop. Add a printer on {}, and type its code here. Keep TapPrint running.",
+            crate::station::host()
+        )
+    }
+}
+
+fn help_server_pause() -> String {
+    format!(
+        "While off, jobs wait on {} for up to 15 minutes. Senders see them waiting.",
+        crate::station::host()
+    )
+}
+
+/// "PRINT FROM KHEVENTS", for the card's heading.
+static SERVER_HEADING: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!("PRINT FROM {}", crate::station::SERVER_NAME.to_uppercase())
+});
+
+static SERVER_TOGGLE: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Take print jobs from {}", crate::station::SERVER_NAME));
 const HELP_CODE: &str = "For curl, servers, and kiosks. It works from any program on this computer, so keep it private. Websites do not need it.";
 const HELP_PAIR_NEW: &str = "It will be able to print and open the drawer. The address above is the one thing a page cannot fake. If unsure, choose Don't allow.";
 const HELP_PAIR_KNOWN: &str = "This site can already print, so it should not need to ask. Allow only if you just cleared its browser or set the till up again. Its old code stops working.";
@@ -501,9 +524,9 @@ struct TillView {
     search: Search,
     /// An update is being downloaded and put in place.
     updating: bool,
-    /// The code from the Printers page on khevents.app.
+    /// The code from the Printers page on the print server.
     station_code: Entity<EditableTextState>,
-    /// A code is being sent to khevents.app.
+    /// A code is being sent to the print server.
     connecting: bool,
     /// The first click on Disconnect only asks.
     confirm_disconnect: bool,
@@ -626,7 +649,7 @@ impl TillView {
         self.connect_station(cx);
     }
 
-    /// Send the code to khevents.app off the UI thread.
+    /// Send the code to the print server off the UI thread.
     fn connect_station(&mut self, cx: &mut Context<Self>) {
         if self.connecting {
             return;
@@ -641,8 +664,10 @@ impl TillView {
             return;
         }
         self.connecting = true;
-        self.shared
-            .set_status(Tone::Busy, "Connecting to khevents.app");
+        self.shared.set_status(
+            Tone::Busy,
+            format!("Connecting to {}", crate::station::host()),
+        );
         let shared = Arc::clone(&self.shared);
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -1321,7 +1346,7 @@ impl TillView {
         body
     }
 
-    /// Print from KHEvents: connect with a code, then the link and recent jobs.
+    /// Print from the server: connect with a code, then the link and recent jobs.
     fn server_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
         let server = &snapshot.server;
         let mut body = card().child(
@@ -1329,17 +1354,18 @@ impl TillView {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(label("PRINT FROM KHEVENTS"))
+                .child(label(SERVER_HEADING.as_str()))
                 .child(self.info("server", cx)),
         );
-        body = body.children(self.note("server", HELP_SERVER));
+        body = body.children(self.note("server", help_server()));
         if !server.connected {
             let typed = self.station_code.read(cx).as_str().to_string();
             let ready = crate::station::normalized_code(&typed).is_some();
             return body
-                .child(hint(
-                    "Sellers on any device can print here. Type the code from the Printers page on khevents.app.",
-                ))
+                .child(hint(format!(
+                    "Sellers on any device can print here. Type the code from the Printers page on {}.",
+                    crate::station::host()
+                )))
                 .child(
                     div()
                         .key_context("TapPrintStation")
@@ -1407,7 +1433,7 @@ impl TillView {
                     .child(self.named("Take print jobs", "server-pause", cx))
                     .child(toggle(
                         "server-toggle",
-                        "Take print jobs from KHEvents",
+                        SERVER_TOGGLE.as_str(),
                         !server.paused,
                         cx.listener(|view, _: &ClickEvent, _, cx| {
                             let paused = !view.snapshot.server.paused;
@@ -1416,7 +1442,7 @@ impl TillView {
                         }),
                     )),
             )
-            .children(self.note("server-pause", HELP_SERVER_PAUSE));
+            .children(self.note("server-pause", help_server_pause()));
         if !server.recent.is_empty() {
             body = body.child(divider()).child(label("RECENT JOBS"));
             for (index, job) in server.recent.iter().enumerate() {

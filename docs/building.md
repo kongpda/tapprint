@@ -38,6 +38,18 @@ sudo apt-get install pkg-config libxkbcommon-dev libxkbcommon-x11-dev \
 cargo build --release
 ```
 
+## Build settings
+
+These are read when building, not at run time. Leave them unset for a build like the official one.
+
+| Variable | Default | What it sets |
+| --- | --- | --- |
+| `TAPPRINT_PRINT_SERVER` | `https://khevents.app` | The print server for **Print from …**. Must be https. See [Print station protocol](print-station-protocol.md). |
+| `TAPPRINT_PRINT_SERVER_NAME` | `KHEvents` | The server's name in the window. |
+| `TAPPRINT_UPDATE_REPO` | `kongpda/tapprint` | The GitHub repository whose releases are offered as updates. |
+
+If you publish your own builds from a fork, also commit your own `release/update-key.pub` (see [CONTRIBUTING.md](../CONTRIBUTING.md#signing-updates)), and set `TAPPRINT_UPDATE_REPO` to your fork. Otherwise your copies will offer the official releases as updates. The Mac bundle id `com.khable.tapprint` (in `scripts/macos-app.sh` and `src/autostart.rs`) belongs to the official app; change both in a fork you ship.
+
 ## Signing a Mac build
 
 Without a signature Apple knows, macOS blocks a downloaded TapPrint until the person allows it under **System Settings > Privacy & Security**. A build made on the same Mac is not blocked.

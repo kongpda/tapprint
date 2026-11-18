@@ -42,6 +42,9 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/tapprint"
 cp "$root/dist/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+# Licences travel with the app: TapPrint's own, and libusb's LGPL notice.
+cp "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/"
+cp -R "$root/licenses" "$app/Contents/Resources/licenses"
 chmod 755 "$app/Contents/MacOS/tapprint"
 
 cat > "$app/Contents/Info.plist" <<EOF
