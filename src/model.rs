@@ -18,6 +18,8 @@ use crate::escpos;
 use crate::raster::{DOTS_58MM, DOTS_80MM};
 
 pub const DEFAULT_PORT: u16 = 9240;
+/// The port network receipt printers answer on, and so the one other apps expect.
+pub const SHARE_PORT: u16 = 9100;
 const CODE_BYTES: usize = 16;
 /// A site the cashier turned down cannot ask again for this long, so a
 /// hostile page cannot keep the prompt on screen.
@@ -151,6 +153,12 @@ struct FileConfig {
     https_only: bool,
     /// Ask GitHub once a day whether a newer TapPrint exists.
     check_updates: bool,
+    /// Network printer mode: answer on `share_port` like a network receipt
+    /// printer, so apps not written for TapPrint can print through it.
+    share_on: bool,
+    share_port: u16,
+    /// Also answer other devices on the local network, not this computer only.
+    share_lan: bool,
     sites: Vec<Site>,
     /// Print from KHEvents: this computer's print-station key. Empty while
     /// not connected. Like the codes above, it is kept in this file only.
@@ -183,6 +191,9 @@ impl Default for FileConfig {
             drawer_off_ms: 50,
             https_only: false,
             check_updates: true,
+            share_on: false,
+            share_port: SHARE_PORT,
+            share_lan: false,
             sites: Vec::new(),
             server_token: String::new(),
             server_station: String::new(),
@@ -290,6 +301,9 @@ pub struct Snapshot {
     /// Only https websites, and pages on this computer, may print.
     pub https_only: bool,
     pub check_updates: bool,
+    pub share_on: bool,
+    pub share_port: u16,
+    pub share_lan: bool,
     /// A newer release, once a check has found one.
     pub update: Option<crate::update::Release>,
     /// Origins allowed to print with their own code.
@@ -469,6 +483,9 @@ impl Shared {
             drawer_pin: state.config.drawer_pin,
             https_only: state.config.https_only,
             check_updates: state.config.check_updates,
+            share_on: state.config.share_on,
+            share_port: state.config.share_port,
+            share_lan: state.config.share_lan,
             update: state.update.clone(),
             sites: state
                 .config
@@ -1002,6 +1019,51 @@ impl Shared {
         let _ = self.persist();
     }
 
+    /// Network printer mode on or off. The caller then runs `share::apply`.
+    pub fn set_share_on(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.share_on = on;
+            state.tone = Tone::Ready;
+            state.status = if on {
+                format!(
+                    "Other apps can print to 127.0.0.1 port {}",
+                    state.config.share_port
+                )
+            } else {
+                "Network printer mode is off".to_string()
+            };
+        }
+        let _ = self.persist();
+    }
+
+    /// The port other apps print to. It cannot be one TapPrint already uses.
+    pub fn set_share_port(&self, port: u16) -> Result<(), String> {
+        {
+            let mut state = self.lock();
+            check_share_port(port, state.config.port)?;
+            state.config.share_port = port;
+            state.tone = Tone::Ready;
+            state.status = format!("Other apps print to port {port}");
+        }
+        self.persist()
+    }
+
+    /// Whether other devices on the local network may print too.
+    pub fn set_share_lan(&self, on: bool) {
+        {
+            let mut state = self.lock();
+            state.config.share_lan = on;
+            state.tone = Tone::Ready;
+            state.status = if on {
+                "Other devices on this network can print".to_string()
+            } else {
+                "Only this computer can print".to_string()
+            };
+        }
+        let _ = self.persist();
+    }
+
     /// With this on, a website on plain http can neither pair nor print.
     /// Pages on this computer are not affected.
     pub fn set_https_only(&self, on: bool) {
@@ -1126,6 +1188,9 @@ fn read_config(path: &Path) -> Result<(FileConfig, Option<String>), String> {
     if config.tcp_port == 0 {
         config.tcp_port = 9100;
     }
+    if check_share_port(config.share_port, config.port).is_err() {
+        config.share_port = SHARE_PORT;
+    }
     if !matches!(config.drawer_pin, 2 | 5) {
         config.drawer_pin = 2;
     }
@@ -1156,6 +1221,34 @@ fn read_config(path: &Path) -> Result<(FileConfig, Option<String>), String> {
         );
     }
     Ok((config, notice))
+}
+
+/// A port other apps can print to: not a system port, and not one of the two
+/// TapPrint's own API answers on.
+fn check_share_port(port: u16, api_port: u16) -> Result<(), String> {
+    if port < 1024 {
+        return Err("choose a port from 1024 to 65535".to_string());
+    }
+    if port == api_port || Some(port) == api_port.checked_add(1) {
+        return Err(format!(
+            "port {port} is the one web pages use. Choose another."
+        ));
+    }
+    Ok(())
+}
+
+/// The port and manual code of the TapPrint on this computer, for the
+/// command line. Read from the settings file, which only this user can read,
+/// and never written.
+pub fn local_access() -> Result<(u16, String), String> {
+    let path = config_path();
+    if !path.exists() {
+        return Err(
+            "TapPrint has not been opened on this computer yet. Open it once first.".to_string(),
+        );
+    }
+    let (config, _) = read_config(&path)?;
+    Ok((config.port, config.pairing_code))
 }
 
 /// A host name or IP address. Not a URL, so a saved value cannot point at a scheme.
@@ -1503,6 +1596,27 @@ mod tests {
             Some(folder.join(PORTABLE_FOLDER))
         );
         let _ = fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn network_printer_mode_is_off_until_asked_for_and_keeps_its_settings() {
+        let path = isolated("share");
+        let shared = Shared::load_from(path.clone(), None).unwrap();
+        let fresh = shared.snapshot();
+        assert!(!fresh.share_on);
+        assert!(!fresh.share_lan);
+        assert_eq!(fresh.share_port, 9100);
+
+        shared.set_share_on(true);
+        shared.set_share_lan(true);
+        shared.set_share_port(9101).unwrap();
+        // A port web pages already use would break printing from the browser.
+        assert!(shared.set_share_port(DEFAULT_PORT).is_err());
+        assert!(shared.set_share_port(DEFAULT_PORT + 1).is_err());
+        assert!(shared.set_share_port(80).is_err());
+        let kept = Shared::load_from(path, None).unwrap().snapshot();
+        assert!(kept.share_on && kept.share_lan);
+        assert_eq!(kept.share_port, 9101);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-`0.1.0-rc.1` to `0.1.0-rc.4` are test builds of this release. They have not been tried on real printers yet.
+`0.1.0-rc.1` to `0.1.0-rc.5` are test builds of this release. They have not been tried on real printers yet.
 
 First public release.
 
@@ -56,3 +56,6 @@ First public release.
 - The test slip is larger and taller, so it reads on paper.
 - Windows: the program no longer needs the Visual C++ runtime, so it starts on a clean PC. It now has an icon and file details.
 - Windows and Linux: a `tapprint-data` folder beside the program keeps the settings there, for portable use.
+- Network printer mode: apps not made for TapPrint can print through it. Turn it on in Settings and give the other app the address shown (`127.0.0.1` port 9100). The port can be changed, and a second switch lets other devices on the local network print. Off by default.
+- Command line: `tapprint print receipt.png` hands a file to the TapPrint that is already open, for desktop apps and scripts. `tapprint status` and `tapprint --help` too.
+- New guide: `docs/other-apps.md`.

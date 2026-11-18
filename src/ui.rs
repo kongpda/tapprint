@@ -481,6 +481,8 @@ const HELP_SITES: &str =
     "When your till page asks to print, it appears at the top of this window for you to allow.";
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
 const HELP_HTTPS: &str = "Refuses websites that are not on https. Pages on this computer still work. Leave it off only if your till runs from an http address.";
+const HELP_SHARE: &str = "For apps that were not made for TapPrint. In the other app, add a network receipt printer with the address shown here. TapPrint passes each job to your printer.";
+const HELP_SHARE_LAN: &str = "Lets tablets, phones and other computers on your shop's network print too. Anyone on that network can then print. Devices on the internet never can.";
 const HELP_UPDATES: &str = "Asks GitHub once a day whether a newer TapPrint exists. Nothing is installed until you click Update.";
 const HELP_SERVER: &str = "Sellers on any phone or laptop can print on this printer. On khevents.app, an owner or admin opens Console, Printers, Add a printer, and types the code here. Keep TapPrint running.";
 const HELP_SERVER_PAUSE: &str =
@@ -498,6 +500,9 @@ struct TillView {
     snapshot: Snapshot,
     host: Entity<EditableTextState>,
     port: Entity<EditableTextState>,
+    /// The port other apps print to, in network printer mode.
+    share_port: Entity<EditableTextState>,
+    share_copied: bool,
     /// The first click on New code only asks. The second one replaces it.
     confirm_rotate: bool,
     /// The site whose Remove was clicked once. A second click removes it.
@@ -528,7 +533,11 @@ impl TillView {
             EditableTextState::new(StringStorage::from(snapshot.tcp_port.to_string()), cx)
         });
         let station_code = cx.new(|cx| EditableTextState::new(StringStorage::from(""), cx));
+        let share_port = cx.new(|cx| {
+            EditableTextState::new(StringStorage::from(snapshot.share_port.to_string()), cx)
+        });
         let subscriptions = vec![
+            cx.subscribe(&share_port, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.subscribe(&host, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.subscribe(&port, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.subscribe(&station_code, |_, _, _: &TextChanged, cx| cx.notify()),
@@ -540,6 +549,8 @@ impl TillView {
             snapshot,
             host,
             port,
+            share_port,
+            share_copied: false,
             confirm_rotate: false,
             confirm_remove: None,
             copied: false,
@@ -560,6 +571,7 @@ impl TillView {
         self.confirm_remove = None;
         self.confirm_disconnect = false;
         self.copied = false;
+        self.share_copied = false;
         self.snapshot = self.shared.snapshot();
         cx.notify();
     }
@@ -695,6 +707,124 @@ impl TillView {
 
     fn on_save(&mut self, _: &SaveNetwork, _window: &mut Window, cx: &mut Context<Self>) {
         self.save_network(cx);
+    }
+
+    /// Any change to network printer mode: save it, then start, stop or
+    /// move the listener to match.
+    fn share_changed(&mut self, cx: &mut Context<Self>) {
+        crate::share::apply(&self.shared);
+        self.pull(cx);
+    }
+
+    fn save_share_port(&mut self, cx: &mut Context<Self>) {
+        let typed = self.share_port.read(cx).as_str().trim().to_string();
+        match typed.parse::<u16>() {
+            Ok(port) => {
+                if let Err(error) = self.shared.set_share_port(port) {
+                    self.shared.set_status(Tone::Problem, error);
+                }
+            }
+            Err(_) => self
+                .shared
+                .set_status(Tone::Problem, "Port must be a number from 1024 to 65535"),
+        }
+        self.share_changed(cx);
+    }
+
+    /// The card that lets apps not made for TapPrint print through it.
+    fn share_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let mut card = card().child(
+            row()
+                .child(self.named("Network printer mode", "share", cx))
+                .child(toggle(
+                    "share-toggle",
+                    "Network printer mode",
+                    snapshot.share_on,
+                    cx.listener(|view, _: &ClickEvent, _, cx| {
+                        view.shared.set_share_on(!view.snapshot.share_on);
+                        view.share_changed(cx);
+                    }),
+                )),
+        );
+        card = card.children(self.note("share", HELP_SHARE));
+        if !snapshot.share_on {
+            return card;
+        }
+        // What to type into the other app. Another device needs this
+        // computer's own address; an app on this computer uses 127.0.0.1.
+        let address = if snapshot.share_lan {
+            print::local_ipv4()
+                .map(|address| address.to_string())
+                .unwrap_or_else(|| "this computer's IP address".to_string())
+        } else {
+            "127.0.0.1".to_string()
+        };
+        let typed = self.share_port.read(cx).as_str().trim().to_string();
+        let saved = typed == snapshot.share_port.to_string();
+        let copy = format!("{address}:{}", snapshot.share_port);
+        card.child(divider())
+            .child(
+                row()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(hint("Printer address for the other app"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("{address}   port {}", snapshot.share_port)),
+                            ),
+                    )
+                    .child(button(
+                        "share-copy",
+                        if self.share_copied { "Copied" } else { "Copy" },
+                        Kind::Plain,
+                        cx.listener(move |view, _: &ClickEvent, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                            view.pull(cx);
+                            view.share_copied = true;
+                        }),
+                    )),
+            )
+            .child(divider())
+            .child(
+                row().child(div().text_sm().child("Port")).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            field(
+                                text_input("share-port").state(self.share_port.downgrade()),
+                                "9100",
+                            )
+                            .w(px(72.)),
+                        )
+                        .child(button(
+                            "share-port-save",
+                            if saved { "Saved" } else { "Save" },
+                            if saved { Kind::Plain } else { Kind::Primary },
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.save_share_port(cx)),
+                        )),
+                ),
+            )
+            .child(divider())
+            .child(
+                row()
+                    .child(self.named("Other devices on this network", "share-lan", cx))
+                    .child(toggle(
+                        "share-lan-toggle",
+                        "Let other devices on this network print",
+                        snapshot.share_lan,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.shared.set_share_lan(!view.snapshot.share_lan);
+                            view.share_changed(cx);
+                        }),
+                    )),
+            )
+            .children(self.note("share-lan", HELP_SHARE_LAN))
     }
 
     fn save_network(&mut self, cx: &mut Context<Self>) {
@@ -1673,6 +1803,7 @@ impl TillView {
             .child(self.info("about", cx));
         page()
             .child(switches)
+            .child(self.share_card(cx, snapshot))
             .child(code)
             .child(about)
             .children(self.note(

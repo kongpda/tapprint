@@ -50,6 +50,7 @@ TapPrint listens only on this computer. A site can print only after the person a
 ## Docs
 
 - [Browser client](client/README.md)
+- [Printing from other apps](docs/other-apps.md): POS software, scripts, the command line
 - [Going live on a real website](docs/deploying.md)
 - [HTTP API](docs/api.md), for `curl` and servers
 - [Print from KHEvents](docs/server-printing.md)
