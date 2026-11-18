@@ -260,7 +260,15 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Open", OpenWindow),
         MenuItem::action("Print a test slip", PrintTest),
-        MenuItem::action("Open cash drawer", OpenDrawer),
+    ]);
+    // Same switch as the Printer tab: with it off, the menu hides the drawer too.
+    if snapshot
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.drawer_enabled)
+    {
+        items.push(MenuItem::action("Open cash drawer", OpenDrawer));
+    }
+    items.extend([
         MenuItem::separator(),
         MenuItem::submenu(Menu::new("Printer").items([
             MenuItem::action("Use USB", UseUsb),
@@ -467,6 +475,7 @@ enum Search {
 // Help stays out of the way until its (i) is clicked. One note is open at a time.
 const HELP_USB: &str = "Set the printer's USB port to Printer Class. If the system made a print queue for it, remove the queue and plug the printer in again.";
 const HELP_NETWORK: &str = "Find printers looks on this computer's own network. If yours is not found, type its address. The port is almost always 9100.";
+const HELP_DRAWER_ENABLE: &str = "Shows the drawer pin choice and the Open drawer button on the Printer tab. Websites can still open the drawer when this is off.";
 const HELP_DRAWER: &str = "Most drawers use pin 2. If Open drawer does nothing, try pin 5.";
 const HELP_SITES: &str =
     "When your till page asks to print, it appears at the top of this window for you to allow.";
@@ -917,6 +926,12 @@ impl Render for TillView {
                     .pb_4()
                     .child(content),
             )
+            .child(
+                div()
+                    .px_4()
+                    .pb_2()
+                    .child(hint(concat!("TapPrint v", env!("CARGO_PKG_VERSION")))),
+            )
     }
 }
 
@@ -1079,13 +1094,15 @@ impl TillView {
         }
         let options = card()
             .child(row().child(div().text_sm().child("Paper")).child(paper))
-            .child(divider())
-            .child(
-                row()
-                    .child(self.named("Cash drawer", "drawer", cx))
-                    .child(pins),
-            )
-            .children(self.note("drawer", HELP_DRAWER));
+            .when(snapshot.drawer_enabled, |card| {
+                card.child(divider())
+                    .child(
+                        row()
+                            .child(self.named("Cash drawer", "drawer", cx))
+                            .child(pins),
+                    )
+                    .children(self.note("drawer", HELP_DRAWER))
+            });
 
         let actions = div()
             .flex()
@@ -1101,17 +1118,19 @@ impl TillView {
                 )
                 .flex_1(),
             )
-            .child(
-                button(
-                    "open-drawer",
-                    "Open drawer",
-                    Kind::Plain,
-                    cx.listener(|view, _: &ClickEvent, _, cx| {
-                        view.job("Opening the drawer", print::open_drawer, cx)
-                    }),
+            .when(snapshot.drawer_enabled, |actions| {
+                actions.child(
+                    button(
+                        "open-drawer",
+                        "Open drawer",
+                        Kind::Plain,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.job("Opening the drawer", print::open_drawer, cx)
+                        }),
+                    )
+                    .flex_1(),
                 )
-                .flex_1(),
-            );
+            });
 
         let last = snapshot
             .last_job
@@ -1296,7 +1315,15 @@ impl TillView {
         }
         let mut body = page().child(self.server_card(cx, snapshot)).child(sites);
         if !snapshot.clients.is_empty() {
-            let mut open = card().child(label("TILL PAGES"));
+            let mut open = card().child(row().child(label("TILL PAGES")).child(button(
+                "clear-clients",
+                "Clear",
+                Kind::Plain,
+                cx.listener(|view, _: &ClickEvent, _, cx| {
+                    view.shared.clear_clients();
+                    view.pull(cx);
+                }),
+            )));
             for client in &snapshot.clients {
                 let state = if client.live {
                     "connected".to_string()
@@ -1547,6 +1574,22 @@ impl TillView {
             .child(divider())
             .child(
                 row()
+                    .child(self.named("Cash drawer", "drawer-enable", cx))
+                    .child(toggle(
+                        "drawer-toggle",
+                        "Show the cash drawer controls",
+                        snapshot.drawer_enabled,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            view.shared
+                                .set_drawer_enabled(!view.snapshot.drawer_enabled);
+                            view.pull(cx);
+                        }),
+                    )),
+            )
+            .children(self.note("drawer-enable", HELP_DRAWER_ENABLE))
+            .child(divider())
+            .child(
+                row()
                     .child(self.named("Raw printer commands", "raw", cx))
                     .child(toggle(
                         "raw-toggle",
@@ -1626,11 +1669,7 @@ impl TillView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(hint(format!(
-                "TapPrint {} · port {}",
-                env!("CARGO_PKG_VERSION"),
-                snapshot.port
-            )))
+            .child(hint(format!("Port {}", snapshot.port)))
             .child(self.info("about", cx));
         page()
             .child(switches)

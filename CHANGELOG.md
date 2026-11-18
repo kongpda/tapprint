@@ -50,3 +50,7 @@ First public release.
 - The Mac app is signed with a Developer ID and notarized by Apple when the release has the certificate, so macOS opens it without the "could not verify" block. `scripts/install-local.sh` and `scripts/macos-app.sh` sign with `TAPPRINT_SIGN_IDENTITY` when it is set.
 - Mac releases are now two apps, `TapPrint-macos-arm64.zip` for Apple silicon and `TapPrint-macos-x86_64.zip` for Intel, in place of one universal app. Each is about half the size. An update downloads the one that matches the Mac.
 - A waiting update also shows in the tray menu, since a till usually runs with the window closed. Turning **Check for updates** on looks at once. Updates are only ever fetched from this project's GitHub pages.
+- Updates are signed: the release checksums carry a minisign signature that the app checks before installing.
+- Settings has a Cash drawer switch. It is off on a new install and on for an existing one. When off, the Printer tab hides the pin choice and Open drawer.
+- The version shows at the bottom of every tab, and Clear empties the Till pages list.
+- The test slip is larger and taller, so it reads on paper.

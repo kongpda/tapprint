@@ -708,6 +708,7 @@ mod tests {
             last_job: None,
             allow_raw: false,
             drawer: [0x1b, 0x70, 0, 25, 25],
+            drawer_enabled: true,
             drawer_pin: 2,
             https_only: false,
             check_updates: true,
