@@ -26,6 +26,14 @@ The Windows program is not code-signed yet, so Windows has no publisher to trust
 
 The Linux program needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later) and these libraries, which desktop systems already have: `libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `libfontconfig`, `libudev`. The window also needs a working Vulkan or OpenGL driver.
 
+## Another app cannot print through TapPrint
+
+- Turn on **Network printer mode** in TapPrint's Settings, and give the other app exactly the address and port shown there.
+- **"could not use port 9100".** Another program has that port. Type a different port in the card, click **Save**, and use the same number in the other app.
+- **A tablet or another computer cannot print.** Turn on **Other devices on this network**, use the address the card then shows (not `127.0.0.1`), and allow TapPrint through the firewall for private networks.
+- **The app says it printed but nothing came out.** Look at the TapPrint window: the printer problem shows there. This kind of connection cannot report errors back to the app.
+- **"TapPrint is set to print to itself".** On the Printer tab, the network address points back at TapPrint. Choose your real printer.
+
 ## TapPrint does not start
 
 A dialog says why. The usual cause is "Port 9240 is already in use": another copy is running. Quit it from the menu bar or tray, then open TapPrint again.

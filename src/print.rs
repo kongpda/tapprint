@@ -62,7 +62,7 @@ pub fn find_network_printers() -> Vec<String> {
 
 /// The address this computer uses to reach its network. Nothing is sent:
 /// choosing a route for a UDP socket is enough to learn it.
-fn local_ipv4() -> Option<Ipv4Addr> {
+pub fn local_ipv4() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     // 192.0.2.1 is reserved for documentation, so it is never a real host.
     socket.connect("192.0.2.1:9").ok()?;

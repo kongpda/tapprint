@@ -6,12 +6,14 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod autostart;
+mod cli;
 mod escpos;
 mod http;
 mod model;
 mod notice;
 mod print;
 mod raster;
+mod share;
 mod station;
 // Only macOS serves HTTPS. Other Unix systems build it for the tests alone,
 // so the relay is checked wherever the tests run.
@@ -26,6 +28,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 fn main() -> ExitCode {
+    // `tapprint print receipt.png` and the like. They talk to the copy that
+    // is already open and never open a window.
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(done) = cli::run(&arguments) {
+        return done;
+    }
     let shared = match model::Shared::load() {
         Ok(shared) => Arc::new(shared),
         Err(error) => {
@@ -42,6 +50,7 @@ fn main() -> ExitCode {
     update::tidy();
     update::watch(Arc::clone(&shared));
     station::watch(Arc::clone(&shared));
+    share::apply(&shared);
     ui::run(shared);
     ExitCode::SUCCESS
 }
