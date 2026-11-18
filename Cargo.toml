@@ -56,6 +56,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# The Windows program's icon and file details. Does nothing on other systems.
+[build-dependencies]
+winresource = "0.1"
+
 [package.metadata.cargo-machete]
 # `gpui-ce` is imported as `gpui`. `libusb1-sys` is listed only for `vendored`.
 ignored = ["gpui-ce", "libusb1-sys"]

@@ -14,6 +14,18 @@ The client reports reason `unreachable`.
 
 **Only secure websites** is on in TapPrint's Settings tab and the till page is on plain `http://`. Serve the page over https, or turn the switch off.
 
+## Windows: antivirus or SmartScreen stops TapPrint
+
+The Windows program is not code-signed yet, so Windows has no publisher to trust.
+
+- **"Windows protected your PC" (SmartScreen).** Choose **More info**, then **Run anyway**. It asks once per download.
+- **An antivirus removes or blocks it.** Some products distrust any new, unsigned program, more so one that starts at login, listens on a local port and can update itself, all of which TapPrint does on purpose. Check the file against `SHA256SUMS` from the release page, then allow it in the antivirus. If Microsoft Defender flags it, report it as a false positive at https://www.microsoft.com/wdsi/filesubmission.
+- **"VCRUNTIME140.dll was not found".** That is 0.1.0-rc.1 or older. Later builds need no extra runtime.
+
+## Linux: TapPrint does not open
+
+The Linux program needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later) and these libraries, which desktop systems already have: `libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `libfontconfig`, `libudev`. The window also needs a working Vulkan or OpenGL driver.
+
 ## TapPrint does not start
 
 A dialog says why. The usual cause is "Port 9240 is already in use": another copy is running. Quit it from the menu bar or tray, then open TapPrint again.

@@ -129,6 +129,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
+      # A portable program must start on a clean Windows PC. One that needs
+      # the Visual C++ runtime fails there with "VCRUNTIME140.dll was not found".
+      - name: The Windows program needs no extra runtime
+        shell: pwsh
+        run: |
+          $program = "target\release\tapprint.exe"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($program))
+          if ($text -match "VCRUNTIME140") {
+            Write-Error "$program needs VCRUNTIME140.dll. Check .cargo/config.toml."
+            exit 1
+          }
       - name: Zip
         shell: pwsh
         run: |

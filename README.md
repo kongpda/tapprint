@@ -14,7 +14,7 @@ TapPrint is a tray app for macOS, Windows, and Linux. Your page sends a receipt 
    - **Network:** choose **Network**. TapPrint looks for printers on your network; click yours. Or type its address.
 3. Click **Print test**.
 
-Linux needs a udev rule for USB printers. See [docs/building.md](docs/building.md#linux-usb-notes).
+Nothing is installed on Windows or Linux: it is one program file you can run from any folder. Linux needs a udev rule for USB printers. See [docs/building.md](docs/building.md#linux-usb-notes).
 
 ## Print from your page
 
