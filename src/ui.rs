@@ -20,7 +20,7 @@ use gpui_ce_elements::editable_text::{
 use gpui_ce_platform::application;
 use gpui_tray::{Icon, Tray};
 
-use crate::model::{Paper, Shared, Snapshot, Tone, Transport};
+use crate::model::{Link, Paper, ServerOutcome, Shared, Snapshot, Tone, Transport};
 use crate::print;
 
 actions!(
@@ -32,6 +32,7 @@ actions!(
         UseUsb,
         UseNetwork,
         SaveNetwork,
+        ConnectStation,
         DenyPair,
         Quit
     ]
@@ -83,6 +84,7 @@ fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
     cx.bind_keys(default_bindings().as_keybindings(Some(DEFAULT_INPUT_CONTEXT)));
     cx.bind_keys([
         KeyBinding::new("enter", SaveNetwork, Some("TapPrint")),
+        KeyBinding::new("enter", ConnectStation, Some("TapPrintStation")),
         // Esc anywhere in the window turns a waiting site down.
         KeyBinding::new("escape", DenyPair, None),
     ]);
@@ -471,6 +473,9 @@ const HELP_SITES: &str =
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
 const HELP_HTTPS: &str = "Refuses websites that are not on https. Pages on this computer still work. Leave it off only if your till runs from an http address.";
 const HELP_UPDATES: &str = "Asks GitHub once a day whether a newer TapPrint exists. Nothing is installed until you click Update.";
+const HELP_SERVER: &str = "Sellers on any phone or laptop can print on this printer. On khevents.app, an owner or admin opens Console, Printers, Add a printer, and types the code here. Keep TapPrint running.";
+const HELP_SERVER_PAUSE: &str =
+    "While off, jobs wait on khevents.app for up to 15 minutes. Sellers see them waiting.";
 const HELP_CODE: &str = "For curl, servers, and kiosks. It works from any program on this computer, so keep it private. Websites do not need it.";
 const HELP_PAIR_NEW: &str = "It will be able to print and open the drawer. The address above is the one thing a page cannot fake. If unsure, choose Don't allow.";
 const HELP_PAIR_KNOWN: &str = "This site can already print, so it should not need to ask. Allow only if you just cleared its browser or set the till up again. Its old code stops working.";
@@ -496,6 +501,12 @@ struct TillView {
     search: Search,
     /// An update is being downloaded and put in place.
     updating: bool,
+    /// The code from the Printers page on khevents.app.
+    station_code: Entity<EditableTextState>,
+    /// A code is being sent to khevents.app.
+    connecting: bool,
+    /// The first click on Disconnect only asks.
+    confirm_disconnect: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -507,9 +518,11 @@ impl TillView {
         let port = cx.new(|cx| {
             EditableTextState::new(StringStorage::from(snapshot.tcp_port.to_string()), cx)
         });
+        let station_code = cx.new(|cx| EditableTextState::new(StringStorage::from(""), cx));
         let subscriptions = vec![
             cx.subscribe(&host, |_, _, _: &TextChanged, cx| cx.notify()),
             cx.subscribe(&port, |_, _, _: &TextChanged, cx| cx.notify()),
+            cx.subscribe(&station_code, |_, _, _: &TextChanged, cx| cx.notify()),
         ];
         Self {
             page: Page::Printer,
@@ -525,6 +538,9 @@ impl TillView {
             help: None,
             search: Search::Idle,
             updating: false,
+            station_code,
+            connecting: false,
+            confirm_disconnect: false,
             _subscriptions: subscriptions,
         }
     }
@@ -533,6 +549,7 @@ impl TillView {
     fn pull(&mut self, cx: &mut Context<Self>) {
         self.confirm_rotate = false;
         self.confirm_remove = None;
+        self.confirm_disconnect = false;
         self.copied = false;
         self.snapshot = self.shared.snapshot();
         cx.notify();
@@ -602,6 +619,68 @@ impl TillView {
 
     fn job(&mut self, busy: &str, job: fn(&Shared) -> Result<(), String>, cx: &mut Context<Self>) {
         run_job(cx, busy, job);
+        self.pull(cx);
+    }
+
+    fn on_connect(&mut self, _: &ConnectStation, _window: &mut Window, cx: &mut Context<Self>) {
+        self.connect_station(cx);
+    }
+
+    /// Send the code to khevents.app off the UI thread.
+    fn connect_station(&mut self, cx: &mut Context<Self>) {
+        if self.connecting {
+            return;
+        }
+        let code = self.station_code.read(cx).as_str().to_string();
+        if crate::station::normalized_code(&code).is_none() {
+            self.shared.set_status(
+                Tone::Problem,
+                "Type the 8-character code from the Printers page",
+            );
+            self.pull(cx);
+            return;
+        }
+        self.connecting = true;
+        self.shared
+            .set_status(Tone::Busy, "Connecting to khevents.app");
+        let shared = Arc::clone(&self.shared);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let client = crate::station::Client::new(&crate::station::server());
+                    crate::station::pair(&shared, &client, &code)
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.connecting = false;
+                match result {
+                    Ok(()) => view
+                        .station_code
+                        .update(cx, |state, cx| state.emplace("", cx)),
+                    Err(error) => view.shared.set_status(Tone::Problem, error),
+                }
+                view.pull(cx);
+            });
+        })
+        .detach();
+        self.pull(cx);
+    }
+
+    fn disconnect_station(&mut self, cx: &mut Context<Self>) {
+        if !self.confirm_disconnect {
+            self.pull(cx);
+            self.confirm_disconnect = true;
+            return;
+        }
+        let shared = Arc::clone(&self.shared);
+        // Telling the server can take a moment; the key is forgotten at once.
+        let _ = std::thread::Builder::new()
+            .name("tapprint-disconnect".into())
+            .spawn(move || {
+                let client = crate::station::Client::new(&crate::station::server());
+                crate::station::disconnect(&shared, &client);
+            });
         self.pull(cx);
     }
 
@@ -810,6 +889,7 @@ impl Render for TillView {
                         // A half-made choice must not still be armed on return.
                         view.confirm_rotate = false;
                         view.confirm_remove = None;
+                        view.confirm_disconnect = false;
                         view.copied = false;
                         cx.notify();
                     }),
@@ -1214,7 +1294,7 @@ impl TillView {
                     )),
             );
         }
-        let mut body = page().child(sites);
+        let mut body = page().child(self.server_card(cx, snapshot)).child(sites);
         if !snapshot.clients.is_empty() {
             let mut open = card().child(label("TILL PAGES"));
             for client in &snapshot.clients {
@@ -1239,6 +1319,159 @@ impl TillView {
             body = body.child(open);
         }
         body
+    }
+
+    /// Print from KHEvents: connect with a code, then the link and recent jobs.
+    fn server_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
+        let server = &snapshot.server;
+        let mut body = card().child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(label("PRINT FROM KHEVENTS"))
+                .child(self.info("server", cx)),
+        );
+        body = body.children(self.note("server", HELP_SERVER));
+        if !server.connected {
+            let typed = self.station_code.read(cx).as_str().to_string();
+            let ready = crate::station::normalized_code(&typed).is_some();
+            return body
+                .child(hint(
+                    "Sellers on any device can print here. Type the code from the Printers page on khevents.app.",
+                ))
+                .child(
+                    div()
+                        .key_context("TapPrintStation")
+                        .on_action(cx.listener(Self::on_connect))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            field(
+                                text_input("station-code").state(self.station_code.downgrade()),
+                                "XXXX-XXXX",
+                            )
+                            .flex_1(),
+                        )
+                        .child(button(
+                            "station-connect",
+                            if self.connecting {
+                                "Connecting…"
+                            } else {
+                                "Connect"
+                            },
+                            if ready && !self.connecting {
+                                Kind::Primary
+                            } else {
+                                Kind::Plain
+                            },
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.connect_station(cx)),
+                        )),
+                );
+        }
+        let (state, good) = match (server.link, server.paused, server.paused_there) {
+            (_, true, _) => ("Paused here".to_string(), false),
+            (Link::Online, _, true) => ("Paused".to_string(), false),
+            (Link::Online, _, _) => ("Online".to_string(), true),
+            (Link::Starting, _, _) => ("Connecting".to_string(), false),
+            (Link::Disabled, _, _) => ("Off".to_string(), false),
+            (Link::Offline | Link::Off, _, _) => ("Offline".to_string(), false),
+        };
+        body = body.child(
+            row()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_sm().truncate().child(server.station.clone()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(MUTED))
+                                .truncate()
+                                .child(server.organizer.clone()),
+                        ),
+                )
+                .child(pill(state, good)),
+        );
+        if !server.note.is_empty() && !server.paused {
+            body = body.child(hint(server.note.clone()));
+        }
+        body = body
+            .child(divider())
+            .child(
+                row()
+                    .child(self.named("Take print jobs", "server-pause", cx))
+                    .child(toggle(
+                        "server-toggle",
+                        "Take print jobs from KHEvents",
+                        !server.paused,
+                        cx.listener(|view, _: &ClickEvent, _, cx| {
+                            let paused = !view.snapshot.server.paused;
+                            view.shared.set_server_paused(paused);
+                            view.pull(cx);
+                        }),
+                    )),
+            )
+            .children(self.note("server-pause", HELP_SERVER_PAUSE));
+        if !server.recent.is_empty() {
+            body = body.child(divider()).child(label("RECENT JOBS"));
+            for (index, job) in server.recent.iter().enumerate() {
+                let from = if job.sender.is_empty() {
+                    job.ago.clone()
+                } else {
+                    format!("{} · {}", job.sender, job.ago)
+                };
+                body = body.child(
+                    row()
+                        .id(SharedString::from(format!("server-job-{index}")))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_sm().truncate().child(job.summary.clone()))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(rgb(MUTED))
+                                        .truncate()
+                                        .child(from),
+                                ),
+                        )
+                        .child(pill(
+                            job.outcome.words().to_string(),
+                            job.outcome == ServerOutcome::Printed,
+                        )),
+                );
+            }
+        }
+        let asked = self.confirm_disconnect;
+        body.child(divider()).child(
+            row()
+                .child(hint(if asked {
+                    "Sellers can no longer print here until you connect again.".to_string()
+                } else {
+                    format!(
+                        "{} printed since TapPrint started. The full log is on the Printers page.",
+                        server.jobs
+                    )
+                }))
+                .child(button(
+                    "station-disconnect",
+                    if asked {
+                        "Really disconnect?"
+                    } else {
+                        "Disconnect"
+                    },
+                    if asked { Kind::Danger } else { Kind::Plain },
+                    cx.listener(|view, _: &ClickEvent, _, cx| view.disconnect_station(cx)),
+                )),
+        )
     }
 
     fn settings_page(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {

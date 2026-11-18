@@ -35,6 +35,10 @@ Before going live, read [Going live on a real website](docs/deploying.md): the p
 
 Safari needs one extra step: in TapPrint, open **Settings** and click **Set up** beside **Safari**.
 
+## Print from KHEvents
+
+One computer with the printer can print for a whole team. On khevents.app, an owner or admin opens **Console**, **Printers**, **Add a printer**. In TapPrint, open **Websites**, type the code under **Print from KHEvents** and click **Connect**. Sellers then pick this printer under **Print on** and print from any phone or laptop. See [Print from KHEvents](docs/server-printing.md).
+
 ## Updates
 
 TapPrint looks for a new version once a day and shows it in the window. Click **Update** and it installs and restarts. It never updates by itself, so a sale is not interrupted.
@@ -48,6 +52,7 @@ TapPrint listens only on this computer. A site can print only after the person a
 - [Browser client](client/README.md)
 - [Going live on a real website](docs/deploying.md)
 - [HTTP API](docs/api.md), for `curl` and servers
+- [Print from KHEvents](docs/server-printing.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Building from source](docs/building.md)
 - [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)

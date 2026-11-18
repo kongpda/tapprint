@@ -714,6 +714,7 @@ mod tests {
             update: None,
             sites: vec!["https://shop.example".to_string()],
             pair_request: None,
+            server: crate::model::ServerView::default(),
         };
         let paired = String::from_utf8(status_json(&snapshot, true)).unwrap();
         assert!(!paired.contains(&code));
