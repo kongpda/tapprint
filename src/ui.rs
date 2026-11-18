@@ -260,7 +260,15 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Open", OpenWindow),
         MenuItem::action("Print a test slip", PrintTest),
-        MenuItem::action("Open cash drawer", OpenDrawer),
+    ]);
+    // Same switch as the Printer tab: with it off, the menu hides the drawer too.
+    if snapshot
+        .as_ref()
+        .is_none_or(|snapshot| snapshot.drawer_enabled)
+    {
+        items.push(MenuItem::action("Open cash drawer", OpenDrawer));
+    }
+    items.extend([
         MenuItem::separator(),
         MenuItem::submenu(Menu::new("Printer").items([
             MenuItem::action("Use USB", UseUsb),
