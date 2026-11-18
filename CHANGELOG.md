@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-`0.1.0-rc.1`, `0.1.0-rc.2` and `0.1.0-rc.3` are test builds of this release. They have not been tried on real printers yet.
+`0.1.0-rc.1` to `0.1.0-rc.4` are test builds of this release. They have not been tried on real printers yet.
 
 First public release.
 
