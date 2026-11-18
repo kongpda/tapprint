@@ -7,7 +7,7 @@
 #[cfg(target_os = "windows")]
 mod windows;
 
-use crate::model::{Fault, JobError};
+use crate::{Fault, JobError};
 
 const PARTIAL_NOTE: &str = "Part of the receipt may have printed.";
 
@@ -88,7 +88,7 @@ fn failure(cause: &str, partial: bool) -> JobError {
 mod libusb {
     use super::UsbDevice;
     use crate::escpos;
-    use crate::model::{Fault, JobError};
+    use crate::{Fault, JobError};
     use rusb::UsbContext;
     use std::sync::OnceLock;
     use std::time::Duration;

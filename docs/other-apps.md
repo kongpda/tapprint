@@ -1,6 +1,6 @@
 # Printing from other apps
 
-There are four ways to send a receipt to TapPrint. Pick by what the other app can do.
+Pick by what the other app can do.
 
 | The other app can… | Use | Setup in the other app |
 | --- | --- | --- |
@@ -8,6 +8,8 @@ There are four ways to send a receipt to TapPrint. Pick by what the other app ca
 | run a program or script | [Command line](#command-line) | One command. |
 | run JavaScript in a web page | [Browser client](../client/README.md) | A few lines of code. |
 | make an HTTP request | [HTTP API](api.md) | One request. |
+| be written in Rust, with no app installed | [The library](#in-a-rust-program-the-library) | One dependency. |
+| start a helper program, with no window | [`tapprint serve`](#in-any-other-language-run-it-with-no-window) | One program file shipped with the app. |
 
 In every case TapPrint runs on the computer the printer is plugged into, and the other app talks to it there.
 
@@ -68,6 +70,36 @@ Where the program is:
 - **Linux:** the `tapprint` file you run.
 
 The command reads the pairing code from the settings file of the same user, so it needs no code typed in. It does not work for another user account on the same computer.
+
+## Without installing the app
+
+Two ways for a developer who wants receipt printing inside their own product, with nothing for their users to install or see.
+
+### In a Rust program: the library
+
+The printing code is a library, [`tapprint-core`](../crates/tapprint-core/README.md). Add it as a dependency and print from your own code. TapPrint itself is not needed at all.
+
+```rust
+use tapprint_core::{Options, Printer};
+
+let receipt = std::fs::read("receipt.png")?;
+Printer::usb()?.print_png(&receipt, &Options::default())?;
+```
+
+### In any other language: run it with no window
+
+Ship the one TapPrint program file with your app and start it yourself:
+
+```shell
+tapprint serve
+```
+
+It runs with no window and no tray icon until you stop it. Your app then prints through it like any other: the [HTTP API](api.md) with the pairing code, `tapprint print`, or [network printer mode](#network-printer-mode).
+
+- The printer and other settings come from the settings file, so set them there, or run the normal app once to choose them. See [Settings file](api.md#settings-file). A `tapprint-data` folder beside the program keeps the settings with it.
+- The pairing code is in that file. It is never printed to the console.
+- Websites cannot pair in this mode, because nobody can click **Allow**. They get `403` `pair_unavailable`.
+- If it cannot start, the reason is printed and the exit code is 1.
 
 ## A web server cannot reach TapPrint directly
 

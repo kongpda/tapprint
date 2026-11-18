@@ -21,6 +21,7 @@ Chrome 142 and later ask once per site before a page can reach apps on this comp
 | 401 | `not_paired` | `/v1/unpair` with a code that is not this site's own. |
 | 403 | `raw_disabled` | Raw ESC/POS sent while **Raw printer commands** is off. |
 | 403 | `insecure_origin` | `/v1/pair` from a plain `http://` site while **Only secure websites** is on. |
+| 403 | `pair_unavailable` | `/v1/pair` while TapPrint runs with no window (`tapprint serve`). Use the pairing code. |
 | 403 | `pair_denied` | The person at the till clicked **Don't allow**. |
 | 404 | `not_found` | Unknown path. |
 | 408 | `pair_timeout` | Nobody answered within 120 s. |

@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-`0.1.0-rc.1` to `0.1.0-rc.5` are test builds of this release. They have not been tried on real printers yet.
+`0.1.0-rc.1` to `0.1.0-rc.6` are test builds of this release. They have not been tried on real printers yet.
 
 First public release.
 
@@ -59,3 +59,5 @@ First public release.
 - Network printer mode: apps not made for TapPrint can print through it. Turn it on in Settings and give the other app the address shown (`127.0.0.1` port 9100). The port can be changed, and a second switch lets other devices on the local network print. Off by default.
 - Command line: `tapprint print receipt.png` hands a file to the TapPrint that is already open, for desktop apps and scripts. `tapprint status` and `tapprint --help` too.
 - New guide: `docs/other-apps.md`.
+- For developers who do not want the app: the printing code is now a library, `tapprint-core`, that a Rust program adds as a dependency and calls directly (`Printer::usb()?.print_png(...)`). The app is built on the same library.
+- `tapprint serve` runs TapPrint with no window and no tray icon, so another app in any language can ship the one program file, start it, and print through it. Websites cannot pair in this mode (`403` `pair_unavailable`); use the pairing code, the command line, or network printer mode.
