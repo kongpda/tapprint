@@ -82,6 +82,20 @@ jobs:
             libudev-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
+      - if: runner.os == 'Windows'
+        run: cargo build --locked
+      # A portable program must start on a clean Windows PC. One that needs
+      # the Visual C++ runtime fails there with "VCRUNTIME140.dll was not found".
+      - name: The Windows program needs no extra runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $program = "target\debug\tapprint.exe"
+          $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($program))
+          if ($text -match "VCRUNTIME140") {
+            Write-Error "$program needs VCRUNTIME140.dll. Check .cargo/config.toml."
+            exit 1
+          }
       # The bundle script is what a release runs. Building the app here, from
       # the debug binary, catches a broken script before a tag is pushed.
       - name: Bundle TapPrint.app

@@ -1316,12 +1316,33 @@ fn write_config(path: &Path, body: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// The name of the folder that, placed beside the program, keeps the
+/// settings there instead of in the user's profile.
+const PORTABLE_FOLDER: &str = "tapprint-data";
+
 fn config_path() -> PathBuf {
+    #[cfg(not(target_os = "macos"))]
+    if let Some(folder) = std::env::current_exe()
+        .ok()
+        .and_then(|program| portable_folder(&program))
+    {
+        return folder.join("config.json");
+    }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let folder = "TapPrint";
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let folder = "tapprint";
     config_root().join(folder).join("config.json")
+}
+
+/// Portable use: with a `tapprint-data` folder beside the program, settings
+/// live in it, so the program and its settings travel together on a USB
+/// stick or in one folder. Only a folder someone made counts: it is never
+/// created here, so a normal install is not changed by where it is put.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn portable_folder(program: &Path) -> Option<PathBuf> {
+    let folder = program.parent()?.join(PORTABLE_FOLDER);
+    folder.is_dir().then_some(folder)
 }
 
 /// The folder holding the settings file and, on macOS, the local certificate.
@@ -1462,6 +1483,26 @@ mod tests {
         assert!(!codes_match(code, "0123456789abcdef0123456789abcdee"));
         assert!(!codes_match(code, "0123456789abcdef0123456789abcde"));
         assert!(!codes_match(code, ""));
+    }
+
+    #[test]
+    fn a_data_folder_beside_the_program_makes_it_portable() {
+        let folder = std::env::temp_dir().join(format!("tapprint-portable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let program = folder.join("tapprint");
+        // No folder: an ordinary install, settings in the user's profile.
+        assert_eq!(portable_folder(&program), None);
+        // A file of that name is not a folder someone set up.
+        fs::write(folder.join(PORTABLE_FOLDER), b"").unwrap();
+        assert_eq!(portable_folder(&program), None);
+        fs::remove_file(folder.join(PORTABLE_FOLDER)).unwrap();
+        fs::create_dir(folder.join(PORTABLE_FOLDER)).unwrap();
+        assert_eq!(
+            portable_folder(&program),
+            Some(folder.join(PORTABLE_FOLDER))
+        );
+        let _ = fs::remove_dir_all(&folder);
     }
 
     #[test]

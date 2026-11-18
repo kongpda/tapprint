@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-`0.1.0-rc.1`, `0.1.0-rc.2` and `0.1.0-rc.3` are test builds of this release. They have not been tried on real printers yet.
+`0.1.0-rc.1` to `0.1.0-rc.4` are test builds of this release. They have not been tried on real printers yet.
 
 First public release.
 
@@ -54,3 +54,5 @@ First public release.
 - Settings has a Cash drawer switch. It is off on a new install and on for an existing one. When off, the Printer tab hides the pin choice and Open drawer.
 - The version shows at the bottom of every tab, and Clear empties the Till pages list.
 - The test slip is larger and taller, so it reads on paper.
+- Windows: the program no longer needs the Visual C++ runtime, so it starts on a clean PC. It now has an icon and file details.
+- Windows and Linux: a `tapprint-data` folder beside the program keeps the settings there, for portable use.

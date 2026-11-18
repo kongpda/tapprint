@@ -1,0 +1,8 @@
+# Build the C runtime into the Windows program. Without this it needs
+# VCRUNTIME140.dll, which a clean Windows PC does not have, and the app fails
+# to start with "VCRUNTIME140.dll was not found".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -151,4 +151,6 @@ Keys: `port` (9240), `pairing_code`, `paper_mm`, `transport` (`usb` or `tcp`), `
 
 On macOS the same folder holds `localhost-cert.pem` and `localhost-key.pem`, the certificate and key for Safari. Delete both to make TapPrint create new ones at the next start. Safari then needs setting up again.
 
+**Portable use (Windows and Linux).** Make a folder named `tapprint-data` beside the program. TapPrint then keeps `config.json` in it instead of the paths above, so the program and its settings can travel together on a USB stick. TapPrint never creates that folder itself.
+
 TapPrint was called Receipt Till. On first start it reads an old `Receipt Till` (or `receipt-till`) settings file. The old file is left in place.
