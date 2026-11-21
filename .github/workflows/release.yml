@@ -200,10 +200,20 @@ jobs:
       - run: |
           mkdir -p dist
           cargo about generate --locked about.hbs -o dist/THIRD-PARTY-LICENSES.html
+      - name: Archive the locked libusb sources
+        run: |
+          set -o pipefail
+          manifest=$(cargo metadata --format-version 1 --locked --filter-platform x86_64-unknown-linux-gnu |
+            jq -er '.packages[] | select(.name == "libusb1-sys") | .manifest_path')
+          source=$(dirname "$manifest")
+          tar -C "$(dirname "$source")" --exclude=.cargo-ok \
+            -czf dist/libusb1-sys-source.tar.gz "$(basename "$source")"
       - uses: actions/upload-artifact@v7
         with:
           name: notices
-          path: dist/THIRD-PARTY-LICENSES.html
+          path: |
+            dist/THIRD-PARTY-LICENSES.html
+            dist/libusb1-sys-source.tar.gz
 
   release:
     needs: [macos, windows, linux, notices]
@@ -223,7 +233,7 @@ jobs:
           merge-multiple: true
       - name: Checksums
         working-directory: artifacts
-        run: sha256sum * > SHA256SUMS
+        run: sha256sum -- * > SHA256SUMS
       # TapPrint only installs an update whose checksums carry this
       # signature. Without the secret the release still works: the app then
       # shows the download page instead of updating itself.
