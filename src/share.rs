@@ -37,6 +37,7 @@ struct Running {
     port: u16,
     lan: bool,
     stop: Arc<AtomicBool>,
+    listener: thread::JoinHandle<()>,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -57,8 +58,8 @@ pub fn apply(shared: &Arc<Shared>) {
     }
     if let Some(old) = running.take() {
         old.stop.store(true, Ordering::Release);
-        // Give the old listener a moment to let go of the port.
-        thread::sleep(TICK + TICK);
+        old.listener.thread().unpark();
+        let _ = old.listener.join();
     }
     if !wanted {
         return;
@@ -87,11 +88,12 @@ pub fn apply(shared: &Arc<Shared>) {
         deliver(&printer, &job);
     });
     match started {
-        Ok(()) => {
+        Ok(listener) => {
             *running = Some(Running {
                 port: snapshot.share_port,
                 lan: snapshot.share_lan,
                 stop,
+                listener,
             });
         }
         Err(error) => shared.set_status(
@@ -150,7 +152,7 @@ fn spawn(
     listener: TcpListener,
     stop: Arc<AtomicBool>,
     sink: impl Fn(Vec<u8>) + Send + Sync + 'static,
-) -> Result<(), String> {
+) -> Result<thread::JoinHandle<()>, String> {
     listener
         .set_nonblocking(true)
         .map_err(|error| error.to_string())?;
@@ -163,7 +165,7 @@ fn spawn(
                 let (socket, peer) = match listener.accept() {
                     Ok(accepted) => accepted,
                     Err(_) => {
-                        thread::sleep(TICK);
+                        thread::park_timeout(TICK);
                         continue;
                     }
                 };
@@ -188,7 +190,6 @@ fn spawn(
                 }
             }
         })
-        .map(|_| ())
         .map_err(|error| error.to_string())
 }
 
@@ -240,6 +241,9 @@ fn receive(
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
+                if stop.load(Ordering::Acquire) {
+                    return Ok(());
+                }
                 if !job.is_empty() && last.elapsed() >= JOB_GAP {
                     sink(std::mem::take(&mut job));
                     last = Instant::now();
@@ -252,7 +256,7 @@ fn receive(
             Err(_) => break,
         }
     }
-    if !job.is_empty() {
+    if !job.is_empty() && !stop.load(Ordering::Acquire) {
         sink(job);
     }
     Ok(())
@@ -293,6 +297,25 @@ mod tests {
         drop(app);
         assert_eq!(jobs.recv_timeout(WAIT).unwrap(), b"\x1b@Hello\n\x1dVB\x00");
         stop.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn stopping_the_listener_discards_an_incomplete_job() {
+        let (port, jobs, stop) = listening();
+        let mut app = connect(port);
+        app.set_read_timeout(Some(WAIT)).unwrap();
+        app.write_all(&[0x10, 0x04, 0x01]).unwrap();
+        let mut reply = [0u8; 1];
+        app.read_exact(&mut reply).unwrap();
+        app.write_all(b"unfinished receipt").unwrap();
+        assert!(matches!(
+            jobs.recv_timeout(TICK),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        stop.store(true, Ordering::Release);
+        app.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(app.read(&mut reply).unwrap(), 0);
+        assert!(jobs.try_recv().is_err());
     }
 
     #[test]
