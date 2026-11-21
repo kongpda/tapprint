@@ -144,7 +144,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path target\release\tapprint.exe,LICENSE,README.md -DestinationPath dist\TapPrint-windows-x86_64.zip
+          Compress-Archive -Path target\release\tapprint.exe,LICENSE,README.md,THIRD_PARTY_NOTICES.md,licenses -DestinationPath dist\TapPrint-windows-x86_64.zip
           # The bare program, which a running TapPrint downloads to update itself.
           Copy-Item target\release\tapprint.exe dist\tapprint-windows-x86_64.exe
       - uses: actions/upload-artifact@v7
@@ -175,7 +175,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/pkg/tapprint-linux-x86_64
-          cp target/release/tapprint LICENSE README.md dist/pkg/tapprint-linux-x86_64/
+          cp -R target/release/tapprint LICENSE README.md THIRD_PARTY_NOTICES.md licenses dist/pkg/tapprint-linux-x86_64/
           tar -C dist/pkg -czf dist/TapPrint-linux-x86_64.tar.gz tapprint-linux-x86_64
           # The bare program, which a running TapPrint downloads to update itself.
           cp target/release/tapprint dist/tapprint-linux-x86_64
@@ -186,8 +186,27 @@ jobs:
             dist/TapPrint-linux-x86_64.tar.gz
             dist/tapprint-linux-x86_64
 
+  # The licence text of every dependency, as one page beside the downloads.
+  notices:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - run: |
+          mkdir -p dist
+          cargo about generate --locked about.hbs -o dist/THIRD-PARTY-LICENSES.html
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notices
+          path: dist/THIRD-PARTY-LICENSES.html
+
   release:
-    needs: [macos, windows, linux]
+    needs: [macos, windows, linux, notices]
     runs-on: ubuntu-latest
     permissions:
       contents: write

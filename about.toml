@@ -1,0 +1,26 @@
+# Third-party licence texts for release builds: `cargo about generate about.hbs`.
+# The Release workflow ships the result as THIRD-PARTY-LICENSES.html.
+# Keep `accepted` in step with deny.toml.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = false

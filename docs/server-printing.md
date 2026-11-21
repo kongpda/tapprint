@@ -50,8 +50,8 @@ then says the printer was removed and forgets the key.
 
 ## For developers
 
-The protocol is described in the KHEvents repository,
-`docs/runbooks/server-printing.md`. TapPrint's side is `src/station.rs`.
+The protocol is in [Print station protocol](print-station-protocol.md).
+TapPrint's side is `src/station.rs`.
 
 A debug build can use another server:
 
@@ -59,7 +59,9 @@ A debug build can use another server:
 TAPPRINT_SERVER=http://127.0.0.1:8000 cargo run
 ```
 
-A release build always uses `https://khevents.app`.
+A release build uses the server it was built with: `https://khevents.app`
+unless `TAPPRINT_PRINT_SERVER` was set. See
+[Using your own server](print-station-protocol.md#using-your-own-server).
 
 To check against a running KHEvents with a station code and a waiting job:
 

@@ -131,3 +131,17 @@ jobs:
       # Known advisories in dependencies fail the build. "Unmaintained"
       # warnings (all from gpui) do not.
       - run: cargo audit
+
+  licences:
+    name: licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Every dependency's licence must be on the list in deny.toml, so a new
+      # one cannot change what TapPrint may be shipped under unnoticed.
+      - run: cargo deny check licenses

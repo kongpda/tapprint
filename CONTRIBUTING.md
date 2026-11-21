@@ -31,6 +31,19 @@ rustup target add x86_64-pc-windows-gnu   # needs the mingw-w64 C compiler
 GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
+## Licences
+
+By sending a pull request you agree that your change is under the [MIT licence](LICENSE), like the rest of TapPrint.
+
+A new dependency must have a licence listed in `deny.toml`. Check with:
+
+```shell
+cargo install cargo-deny
+cargo deny check licenses
+```
+
+CI runs this too. Do not add a GPL or AGPL crate. If a dependency bundles C code (as `libusb1-sys` bundles libusb), say so in the pull request and add it to [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Style
 
 - Write plain, short sentences in comments, docs, and messages.
@@ -46,7 +59,7 @@ GPUI_RENDER_ALLOW_MISSING_DXBC=1 cargo clippy --all-targets --target x86_64-pc-w
 2. Merge to `main` and wait for CI to pass.
 3. Tag it and push the tag: `git tag v0.2.0 && git push origin v0.2.0`. The tag must match the version in `Cargo.toml`.
 
-The Release workflow builds macOS (one app for Apple silicon, one for Intel), Windows, and Linux, and publishes them with `SHA256SUMS`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The Mac apps are signed only when the secrets under "Signing the Mac app" are set.
+The Release workflow builds macOS (one app for Apple silicon, one for Intel), Windows, and Linux, and publishes them with `SHA256SUMS` and `THIRD-PARTY-LICENSES.html`. A tag with a hyphen, such as `v0.2.0-rc.1`, becomes a pre-release: set the version to `0.2.0-rc.1` for it. TapPrint never offers a pre-release as an update, and a till on one is offered the finished release. The Mac apps are signed only when the secrets under "Signing the Mac app" are set.
 
 ## The library
 

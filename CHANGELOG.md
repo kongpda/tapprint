@@ -7,6 +7,8 @@
 First public release.
 
 - Print from KHEvents (`0.1.0-rc.3`): connect TapPrint to khevents.app with a one-time code from the Printers page, and sellers on any phone or laptop can print on this printer. TapPrint asks for jobs about every 2 seconds, prints each slip like a local print, and reports what the printer did. Only PNG slips are accepted from the server. A slip that may have printed is never printed again by TapPrint. Pause, Disconnect and the last 20 jobs (with the sender's name) are on the Websites tab. Local printing is unchanged. See [docs/server-printing.md](docs/server-printing.md).
+- The print server, its name in the window, and the GitHub repository for updates are build settings (`TAPPRINT_PRINT_SERVER`, `TAPPRINT_PRINT_SERVER_NAME`, `TAPPRINT_UPDATE_REPO`). The defaults are unchanged. The print station protocol is documented in [docs/print-station-protocol.md](docs/print-station-protocol.md).
+- Third-party notices: releases carry `THIRD-PARTY-LICENSES.html`, the downloads carry libusb's LGPL notice, and CI checks every dependency's licence.
 - Tray and menu-bar app for macOS, Windows, and Linux.
 - Local HTTP API on `127.0.0.1:9240`: `GET /v1/status`, `POST /v1/pair`, `POST /v1/unpair`, `POST /v1/print`.
 - Prints PNG receipts to USB (printer class) and network (port 9100) ESC/POS thermal printers. No vendor driver and no print dialog.

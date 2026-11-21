@@ -35,9 +35,13 @@ Before going live, read [Going live on a real website](docs/deploying.md): the p
 
 Safari needs one extra step: in TapPrint, open **Settings** and click **Set up** beside **Safari**.
 
-## Print from KHEvents
+## Print from a server
 
-One computer with the printer can print for a whole team. On khevents.app, an owner or admin opens **Console**, **Printers**, **Add a printer**. In TapPrint, open **Websites**, type the code under **Print from KHEvents** and click **Connect**. Sellers then pick this printer under **Print on** and print from any phone or laptop. See [Print from KHEvents](docs/server-printing.md).
+One computer with the printer can print for a whole team. TapPrint asks a print server for jobs, so people can print from any phone or laptop.
+
+The ready-made builds use [KHEvents](https://khevents.app). There, an owner or admin opens **Console**, **Printers**, **Add a printer**. In TapPrint, open **Websites**, type the code under **Print from KHEvents** and click **Connect**. See [Print from KHEvents](docs/server-printing.md).
+
+To use your own server, build TapPrint with `TAPPRINT_PRINT_SERVER=https://your.server` and have the server speak the [print station protocol](docs/print-station-protocol.md).
 
 ## Updates
 
@@ -45,7 +49,14 @@ TapPrint looks for a new version once a day and shows it in the window. Click **
 
 ## Security
 
-TapPrint listens only on this computer. A site can print only after the person at the till clicks **Allow**, and can be removed in the window at any time. Details are in [SECURITY.md](SECURITY.md).
+TapPrint listens only on this computer. A site can print only after the person at the till clicks **Allow**, and can be removed in the window at any time.
+
+- Serve your till page over HTTPS. TapPrint warns about plain http sites, and **Only secure websites** in Settings refuses them.
+- Keep the manual pairing code (Settings) private. It works from any program on this computer.
+- Leave **Raw printer commands** off unless your page needs it. Raw commands can change printer settings.
+- Updates install only when you click **Update**, and only if the release is signed with the project's key.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md). It also has the full threat model.
 
 ## Docs
 
@@ -53,10 +64,14 @@ TapPrint listens only on this computer. A site can print only after the person a
 - [Printing from other apps](docs/other-apps.md): POS software, scripts, the command line, with no window, or as a Rust library
 - [Going live on a real website](docs/deploying.md)
 - [HTTP API](docs/api.md), for `curl` and servers
-- [Print from KHEvents](docs/server-printing.md)
+- [Print from KHEvents](docs/server-printing.md) · [Print station protocol](docs/print-station-protocol.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Windows code signing](docs/windows-signing.md)
 - [Building from source](docs/building.md)
 - [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
-MIT licence. See [LICENSE](LICENSE).
+## Licence
+
+TapPrint is under the [MIT licence](LICENSE). Builds include libusb, which is under the LGPL-2.1, and other open source code: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+TapPrint works with printers that understand ESC/POS commands. EPSON and ESC/POS are registered trademarks of Seiko Epson Corporation. TapPrint is not made or endorsed by Epson.
