@@ -3,7 +3,7 @@
 //! The window is the whole setup: pairing code, paper, USB printer, and the
 //! network address. Nothing here asks the cashier to edit a JSON file.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use gpui_ce_elements::editable_text::{
 use gpui_ce_platform::application;
 use gpui_tray::{Icon, Tray};
 
-use crate::model::{Link, Paper, ServerOutcome, Shared, Snapshot, Tone, Transport};
+use crate::model::{Link, Paper, PrinterSetup, ServerOutcome, Shared, Snapshot, Tone, Transport};
 use crate::print;
 
 actions!(
@@ -62,6 +62,7 @@ struct AppGlobal {
     menu_key: RefCell<String>,
     /// The site the window was last raised for, so it is raised once per request.
     asked: RefCell<Option<String>>,
+    manual_job: Cell<bool>,
 }
 
 impl Global for AppGlobal {}
@@ -110,6 +111,7 @@ fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
         tray,
         menu_key: RefCell::new(String::new()),
         asked: RefCell::new(None),
+        manual_job: Cell::new(false),
     });
     // gpui-ce 0.3 on macOS still holds its platform lock while this start
     // callback runs, so opening a window here deadlocks. Open it on the next
@@ -176,18 +178,14 @@ fn sync_window(cx: &mut App) {
         let _ = handle.update(cx, |_view, window, _cx| window.request_attention());
     }
     let key = format!(
-        "{:?}|{}|{:?}|{}|{:?}|{}|{:?}",
+        "{:?}|{}|{:?}|{}|{:?}|{:?}|{}|{:?}",
         snapshot.tone,
         snapshot.status,
         snapshot.transport,
         snapshot.paper.millimetres(),
         asking,
-        snapshot
-            .printers
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect::<Vec<_>>()
-            .join(","),
+        snapshot.printer_setup,
+        snapshot.drawer_enabled,
         snapshot.update.as_ref().map(|release| &release.version)
     );
     if let Some(handle) = window {
@@ -255,18 +253,19 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
             OpenWindow,
         ));
     }
+    let can_print = snapshot.as_ref().is_some_and(can_run_manual_job);
     items.extend([
         MenuItem::action(summary, gpui::NoAction).disabled(true),
         MenuItem::separator(),
         MenuItem::action("Open", OpenWindow),
-        MenuItem::action("Print a test slip", PrintTest),
+        MenuItem::action("Print a test slip", PrintTest).disabled(!can_print),
     ]);
     // Same switch as the Printer tab: with it off, the menu hides the drawer too.
     if snapshot
         .as_ref()
         .is_none_or(|snapshot| snapshot.drawer_enabled)
     {
-        items.push(MenuItem::action("Open cash drawer", OpenDrawer));
+        items.push(MenuItem::action("Open cash drawer", OpenDrawer).disabled(!can_print));
     }
     items.extend([
         MenuItem::separator(),
@@ -341,21 +340,32 @@ fn open_drawer(_: &OpenDrawer, cx: &mut App) {
 /// Run a printer job off the main thread. The caller refreshes the window,
 /// because a view cannot be updated from inside its own listener.
 fn run_job(cx: &mut App, busy: &str, job: fn(&Shared) -> Result<(), String>) {
-    let Some(shared) = cx
-        .try_global::<AppGlobal>()
-        .map(|global| global.shared.clone())
-    else {
+    let Some(global) = cx.try_global::<AppGlobal>() else {
         return;
     };
+    let shared = Arc::clone(&global.shared);
+    if global.manual_job.get() || shared.printer_busy() || !can_run_manual_job(&shared.snapshot()) {
+        return;
+    }
+    global.manual_job.set(true);
     shared.set_status(Tone::Busy, busy);
     cx.spawn(async move |cx| {
         let _ = cx
             .background_executor()
             .spawn(async move { job(&shared) })
             .await;
-        cx.update(sync_window);
+        cx.update(|cx| {
+            if let Some(global) = cx.try_global::<AppGlobal>() {
+                global.manual_job.set(false);
+            }
+            sync_window(cx);
+        });
     })
     .detach();
+}
+
+fn can_run_manual_job(snapshot: &Snapshot) -> bool {
+    snapshot.printer_setup == PrinterSetup::Configured && snapshot.tone != Tone::Busy
 }
 
 fn use_usb(_: &UseUsb, cx: &mut App) {
@@ -1259,14 +1269,20 @@ impl TillView {
                     .children(self.note("drawer", HELP_DRAWER))
             });
 
+        let can_print =
+            can_run_manual_job(snapshot) && (usb || self.network_address_saved(cx, snapshot));
         let actions = div()
             .flex()
             .gap_2()
             .child(
                 button(
                     "test-slip",
-                    "Print test",
-                    Kind::Primary,
+                    "Print test slip",
+                    if can_print {
+                        Kind::Primary
+                    } else {
+                        Kind::Disabled
+                    },
                     cx.listener(|view, _: &ClickEvent, _, cx| {
                         view.job("Printing a test slip", print::print_test, cx)
                     }),
@@ -1278,7 +1294,11 @@ impl TillView {
                     button(
                         "open-drawer",
                         "Open drawer",
-                        Kind::Plain,
+                        if can_print {
+                            Kind::Plain
+                        } else {
+                            Kind::Disabled
+                        },
                         cx.listener(|view, _: &ClickEvent, _, cx| {
                             view.job("Opening the drawer", print::open_drawer, cx)
                         }),
@@ -1287,15 +1307,16 @@ impl TillView {
                 )
             });
 
-        let last = snapshot
-            .last_job
-            .clone()
-            .unwrap_or_else(|| "Nothing printed yet".to_string());
         page()
             .child(connection)
             .child(options)
             .child(actions)
-            .child(hint(last).px_1())
+            .children(
+                snapshot
+                    .last_job
+                    .as_ref()
+                    .map(|last| hint(last.clone()).px_1()),
+            )
     }
 
     fn usb_list(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
@@ -1333,12 +1354,14 @@ impl TillView {
         list
     }
 
+    fn network_address_saved(&self, cx: &App, snapshot: &Snapshot) -> bool {
+        !snapshot.tcp_host.is_empty()
+            && self.host.read(cx).as_str().trim() == snapshot.tcp_host
+            && self.port.read(cx).as_str().trim().parse::<u16>() == Ok(snapshot.tcp_port)
+    }
+
     fn network_form(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> gpui::Div {
-        let typed = self.host.read(cx).as_str().trim().to_string();
-        let port = self.port.read(cx).as_str().trim().to_string();
-        let saved = !snapshot.tcp_host.is_empty()
-            && typed == snapshot.tcp_host
-            && port == snapshot.tcp_port.to_string();
+        let saved = self.network_address_saved(cx, snapshot);
         let mut form = div()
             .key_context("TapPrint")
             .on_action(cx.listener(Self::on_save))
@@ -1364,10 +1387,13 @@ impl TillView {
                     .child(button(
                         "use-network",
                         if saved { "Saved" } else { "Save" },
-                        if saved { Kind::Plain } else { Kind::Primary },
+                        if saved { Kind::Disabled } else { Kind::Primary },
                         cx.listener(|view, _: &ClickEvent, _, cx| view.save_network(cx)),
                     )),
-            );
+            )
+            .when(!saved && !snapshot.tcp_host.is_empty(), |form| {
+                form.child(hint("Save the address before printing a test slip."))
+            });
         let searching = self.search == Search::Running;
         form =
             form.child(
@@ -1842,10 +1868,16 @@ impl TillView {
 /// The app name and one word for how things are. The sentence under it is
 /// the latest status, or the problem to fix.
 fn header(snapshot: &Snapshot) -> gpui::Div {
-    let (colour, word) = match snapshot.tone {
-        Tone::Ready => (READY_FG, "Ready"),
-        Tone::Busy => (BUSY_FG, "Working"),
-        Tone::Problem => (BAD_FG, "Check"),
+    let (background, colour, word) = match snapshot.tone {
+        Tone::Ready => (READY_BG, READY_FG, "Ready"),
+        Tone::Busy if snapshot.printer_setup == PrinterSetup::Searching => {
+            (BUSY_BG, BUSY_FG, "Scanning")
+        }
+        Tone::Busy => (BUSY_BG, BUSY_FG, "Working"),
+        Tone::Problem if snapshot.printer_setup != PrinterSetup::Configured => {
+            (BAD_BG, BAD_FG, "Setup needed")
+        }
+        Tone::Problem => (BAD_BG, BAD_FG, "Needs attention"),
     };
     let problem = snapshot.tone == Tone::Problem;
     div()
@@ -1870,6 +1902,10 @@ fn header(snapshot: &Snapshot) -> gpui::Div {
                     div()
                         .flex()
                         .items_center()
+                        .rounded_full()
+                        .px_2()
+                        .py_1()
+                        .bg(rgb(background))
                         .gap(px(6.))
                         .child(div().w(px(8.)).h(px(8.)).rounded_full().bg(rgb(colour)))
                         .child(div().text_xs().text_color(rgb(colour)).child(word)),
@@ -1967,6 +2003,7 @@ enum Kind {
     /// The one thing to do next.
     Primary,
     Plain,
+    Disabled,
     /// The second click of something that cannot be undone.
     Danger,
 }
@@ -1981,15 +2018,24 @@ fn button(
     let (background, foreground, edge, hover) = match kind {
         Kind::Primary => (INK, CARD, INK, MUTED),
         Kind::Plain => (CARD, INK, SOFT, PAPER),
+        Kind::Disabled => (PAPER, MUTED, SOFT, PAPER),
         Kind::Danger => (BAD_BG, BAD_FG, BAD_FG, BAD_BG),
     };
     div()
         .id(id)
         .role(gpui::Role::Button)
         .aria_label(label.clone())
-        .focusable()
-        .tab_index(0)
-        .on_click(on_click)
+        .aria_disabled(kind == Kind::Disabled)
+        .when(kind != Kind::Disabled, |button| {
+            button
+                .focusable()
+                .tab_index(0)
+                .on_click(on_click)
+                .cursor_pointer()
+                .hover(move |style| style.bg(rgb(hover)))
+                .active(|style| style.opacity(0.7))
+                .focus_visible(|style| style.border_color(rgb(READY_FG)))
+        })
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -2002,10 +2048,6 @@ fn button(
         .bg(rgb(background))
         .text_color(rgb(foreground))
         .text_sm()
-        .cursor_pointer()
-        .hover(move |style| style.bg(rgb(hover)))
-        .active(|style| style.opacity(0.7))
-        .focus_visible(|style| style.border_color(rgb(READY_FG)))
         .child(label)
 }
 

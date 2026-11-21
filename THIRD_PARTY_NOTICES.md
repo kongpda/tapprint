@@ -34,14 +34,21 @@ TapPrint carry it in the download.
   Gray, © 2013-2018 Chris Dickens, and the other authors in libusb's
   `AUTHORS` file, copied to
   [`licenses/libusb-AUTHORS.txt`](licenses/libusb-AUTHORS.txt).
-- The source TapPrint uses is unchanged libusb 1.0.27, as bundled in
-  [`libusb1-sys` 0.7.0](https://crates.io/crates/libusb1-sys/0.7.0)
-  (folder `libusb/`). It is also at
-  <https://github.com/libusb/libusb/releases/tag/v1.0.27>.
-- You may change libusb and use your changed version with TapPrint. All of
-  TapPrint's source is in this repository: change the libusb source in your
-  copy of `libusb1-sys`, point `Cargo.toml` at it with `[patch.crates-io]`,
-  and build as in [docs/building.md](docs/building.md).
+- Each GitHub release provides the exact `libusb1-sys` crate used to build it
+  in `libusb1-sys-source.tar.gz`. The crate includes the libusb source in
+  `libusb/`. TapPrint's source and lockfile are in the source archive for
+  the same release tag.
+- To rebuild with a modified libusb, download both archives, extract them,
+  and edit the library under `libusb/`. Add this to the workspace root
+  `Cargo.toml`, using the path to the extracted crate:
+
+  ```toml
+  [patch.crates-io]
+  libusb1-sys = { path = "../libusb1-sys-0.7.0" }
+  ```
+
+  Run `cargo update -p libusb1-sys --offline` after fetching the original
+  dependencies, then follow [Building from source](docs/building.md).
 
 If you share a TapPrint build, share these notices with it, keep this source
 available, and do not forbid people from changing or reverse engineering the

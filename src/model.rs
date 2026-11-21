@@ -33,7 +33,9 @@ const PROMPT_GAP: Duration = Duration::from_secs(15);
 /// Start of the status shown when USB devices could not be listed.
 const USB_SCAN_FAILED: &str = "Could not look for USB printers";
 const TYPE_ADDRESS: &str = "Enter the printer's address below";
+const LOOKING_FOR_PRINTERS: &str = "Looking for USB printers…";
 const NO_PRINTER: &str = "No printer found. Plug in your printer and switch it on.";
+const SELECT_USB: &str = "Choose a USB printer to continue.";
 const CHOOSE_PRINTER: &str =
     "The saved USB printer is not plugged in. Choose a printer in the window.";
 
@@ -74,6 +76,27 @@ pub enum Tone {
     Problem,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrinterSetup {
+    Searching,
+    MissingUsb,
+    SelectUsb,
+    MissingAddress,
+    Configured,
+}
+
+impl PrinterSetup {
+    fn status(self) -> Option<(Tone, &'static str)> {
+        match self {
+            Self::Searching => Some((Tone::Busy, LOOKING_FOR_PRINTERS)),
+            Self::MissingUsb => Some((Tone::Problem, NO_PRINTER)),
+            Self::SelectUsb => Some((Tone::Problem, SELECT_USB)),
+            Self::MissingAddress => Some((Tone::Problem, TYPE_ADDRESS)),
+            Self::Configured => None,
+        }
+    }
+}
+
 /// Missing fields take their defaults, so an older or hand-edited file still loads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -107,7 +130,10 @@ struct FileConfig {
     sites: Vec<Site>,
     /// Print from a server: this computer's print-station key. Empty while
     /// not connected. Like the codes above, it is kept in this file only.
+    #[serde(rename = "station_key", alias = "server_token")]
     server_token: String,
+    /// Older files could only pair with the built-in KHEvents server.
+    server_endpoint: String,
     /// The printer's name and organizer, as the print server gave them.
     server_station: String,
     server_organizer: String,
@@ -117,6 +143,24 @@ struct FileConfig {
 
 fn drawer_enabled_for_old_files() -> bool {
     true
+}
+
+impl FileConfig {
+    fn station_endpoint(&self) -> &str {
+        if self.server_endpoint.is_empty() {
+            crate::station::DEFAULT_SERVER
+        } else {
+            &self.server_endpoint
+        }
+    }
+
+    fn clear_station(&mut self) {
+        self.server_token.clear();
+        self.server_endpoint.clear();
+        self.server_station.clear();
+        self.server_organizer.clear();
+        self.server_paused = false;
+    }
 }
 
 impl Default for FileConfig {
@@ -141,6 +185,7 @@ impl Default for FileConfig {
             share_lan: false,
             sites: Vec::new(),
             server_token: String::new(),
+            server_endpoint: String::new(),
             server_station: String::new(),
             server_organizer: String::new(),
             server_paused: false,
@@ -230,6 +275,7 @@ pub struct Snapshot {
     pub tcp_port: u16,
     pub usb_id: Option<String>,
     pub listed: bool,
+    pub printer_setup: PrinterSetup,
     pub tone: Tone,
     pub status: String,
     pub config_path: String,
@@ -340,7 +386,7 @@ impl Shared {
     }
 
     fn read_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
-        let (config, notice) = if path.exists() {
+        let (mut config, notice) = if path.exists() {
             read_config(&path)?
         } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
             // Keep the pairing code from a Receipt Till install, so the till page
@@ -349,6 +395,10 @@ impl Shared {
         } else {
             (fresh_config()?, None)
         };
+        if !config.server_token.is_empty() && config.station_endpoint() != crate::station::server()
+        {
+            config.clear_station();
+        }
         Ok(Self::from_parts(config, path, notice))
     }
 
@@ -388,12 +438,23 @@ impl Shared {
 
     pub fn snapshot(&self) -> Snapshot {
         let state = self.lock();
-        // "Ready" must mean a printer is there. A USB till with an empty scan
-        // is not ready, whatever the last message said.
-        let no_printer = state.tone == Tone::Ready
-            && state.config.transport == Transport::Usb
-            && state.listed
-            && state.printers.is_empty();
+        let printer_setup = match state.config.transport {
+            Transport::Tcp if state.config.tcp_host.is_empty() => PrinterSetup::MissingAddress,
+            Transport::Usb if !state.listed => PrinterSetup::Searching,
+            Transport::Usb if state.printers.is_empty() => PrinterSetup::MissingUsb,
+            Transport::Usb
+                if !state
+                    .printers
+                    .iter()
+                    .any(|(id, _)| Some(id) == state.config.usb_id.as_ref()) =>
+            {
+                PrinterSetup::SelectUsb
+            }
+            _ => PrinterSetup::Configured,
+        };
+        let setup_status = (state.tone == Tone::Ready)
+            .then(|| printer_setup.status())
+            .flatten();
         Snapshot {
             port: state.config.port,
             pairing_code: state.config.pairing_code.clone(),
@@ -403,16 +464,10 @@ impl Shared {
             tcp_port: state.config.tcp_port,
             usb_id: state.config.usb_id.clone(),
             listed: state.listed,
-            tone: if no_printer {
-                Tone::Problem
-            } else {
-                state.tone
-            },
-            status: if no_printer {
-                NO_PRINTER.to_string()
-            } else {
-                state.status.clone()
-            },
+            printer_setup,
+            tone: setup_status.map_or(state.tone, |(tone, _)| tone),
+            status: setup_status
+                .map_or_else(|| state.status.clone(), |(_, message)| message.into()),
             config_path: state.path.display().to_string(),
             printers: state.printers.clone(),
             clients: state
@@ -502,20 +557,23 @@ impl Shared {
     }
 
     /// The print-station key, while connected. Only the station thread reads it.
-    pub fn server_token(&self) -> Option<String> {
+    pub fn server_token(&self, endpoint: &str) -> Option<String> {
         let state = self.lock();
-        (!state.config.server_token.is_empty()).then(|| state.config.server_token.clone())
+        (!state.config.server_token.is_empty() && state.config.station_endpoint() == endpoint)
+            .then(|| state.config.server_token.clone())
     }
 
     /// Save the key the print server gave for a pairing code.
     pub fn connect_server(
         &self,
+        endpoint: &str,
         token: &str,
         station: &str,
         organizer: &str,
     ) -> Result<(), String> {
         {
             let mut state = self.lock();
+            state.config.server_endpoint = endpoint.to_string();
             state.config.server_token = token.to_string();
             state.config.server_station = station.to_string();
             state.config.server_organizer = organizer.to_string();
@@ -532,14 +590,13 @@ impl Shared {
     }
 
     /// Forget the key. `why` goes on the status line.
-    pub fn disconnect_server(&self, why: &str, problem: bool) {
+    pub fn disconnect_server(&self, endpoint: &str, token: &str, why: &str, problem: bool) {
         {
             let mut state = self.lock();
-            if state.config.server_token.is_empty() {
+            if state.config.station_endpoint() != endpoint || state.config.server_token != token {
                 return;
             }
-            state.config.server_token = String::new();
-            state.config.server_paused = false;
+            state.config.clear_station();
             state.link = Link::Off;
             state.link_note = String::new();
             state.paused_there = false;
@@ -547,14 +604,6 @@ impl Shared {
             state.status = why.to_string();
         }
         let _ = self.persist();
-    }
-
-    /// Forget the key only if it is still `token`. A reply to an old key must
-    /// not disconnect a pairing made a moment ago.
-    pub fn drop_server_token(&self, token: &str, why: &str) {
-        if self.server_token().as_deref() == Some(token) {
-            self.disconnect_server(why, true);
-        }
     }
 
     pub fn set_server_paused(&self, paused: bool) {
@@ -739,8 +788,19 @@ impl Shared {
 
     /// `Err` when it could not be saved. The status already says so.
     pub fn set_transport(&self, transport: Transport) -> Result<(), String> {
-        self.lock().config.transport = transport;
+        {
+            let mut state = self.lock();
+            if transport == Transport::Usb && state.config.transport != Transport::Usb {
+                state.listed = false;
+                state.printers.clear();
+            }
+            state.config.transport = transport;
+        }
         self.persist()
+    }
+
+    pub fn uses_usb(&self) -> bool {
+        self.lock().config.transport == Transport::Usb
     }
 
     pub fn select_usb(&self, id: String) {
@@ -1595,6 +1655,18 @@ mod tests {
     }
 
     #[test]
+    fn older_station_keys_belong_to_khevents() {
+        let mut config: FileConfig =
+            serde_json::from_str(r#"{"server_token":"kps_existing"}"#).unwrap();
+        assert_eq!(config.server_token, "kps_existing");
+        assert_eq!(config.station_endpoint(), crate::station::DEFAULT_SERVER);
+        config.server_endpoint = "https://print.example.com".into();
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(written["station_key"], "kps_existing");
+        assert!(written.get("server_token").is_none());
+    }
+
+    #[test]
     fn a_new_code_is_32_hex_digits_and_accepts_uppercase() {
         let shared = Shared::load_from(isolated("fresh"), None).unwrap();
         let code = shared.snapshot().pairing_code;
@@ -1620,7 +1692,7 @@ mod tests {
         let third = Shared::load_from(path, None).unwrap().snapshot();
         assert_eq!(first.pairing_code, second.pairing_code);
         assert_eq!(second.pairing_code, third.pairing_code);
-        assert_eq!(third.tone, Tone::Ready);
+        assert_eq!(third.tone, Tone::Busy);
     }
 
     #[test]
@@ -1674,7 +1746,7 @@ mod tests {
         shared.use_saved_network().unwrap();
         let snapshot = shared.snapshot();
         assert_eq!(snapshot.transport, Transport::Tcp);
-        assert_eq!(snapshot.tone, Tone::Ready);
+        assert_eq!(snapshot.tone, Tone::Problem);
         assert_eq!(snapshot.status, TYPE_ADDRESS);
 
         shared.set_network("192.168.1.20", 9100).unwrap();
@@ -1690,11 +1762,19 @@ mod tests {
     fn ready_needs_a_printer_on_a_usb_till() {
         let shared = Shared::load_from(isolated("no-printer"), None).unwrap();
         // Before the first scan the window says it is looking, not that it failed.
-        assert_eq!(shared.snapshot().tone, Tone::Ready);
+        assert_eq!(shared.snapshot().tone, Tone::Busy);
         shared.set_printers(Vec::new());
         let snapshot = shared.snapshot();
         assert_eq!(snapshot.tone, Tone::Problem);
         assert_eq!(snapshot.status, NO_PRINTER);
+        let first = ("04b8:0202:1:7".to_string(), "First printer".to_string());
+        let second = ("04b8:0202:1:8".to_string(), "Second printer".to_string());
+        shared.set_printers(vec![first.clone(), second]);
+        assert_eq!(shared.snapshot().printer_setup, PrinterSetup::SelectUsb);
+        assert_eq!(shared.snapshot().status, SELECT_USB);
+        shared.select_usb(first.0);
+        assert_eq!(shared.snapshot().printer_setup, PrinterSetup::Configured);
+        assert_eq!(shared.snapshot().tone, Tone::Ready);
         // A network printer is not found by the USB scan, so it stays ready.
         shared.set_network("192.168.1.20", 9100).unwrap();
         assert_eq!(shared.snapshot().tone, Tone::Ready);

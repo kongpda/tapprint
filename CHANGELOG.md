@@ -1,8 +1,16 @@
 # Changelog
 
+## 0.1.0-rc.7
+
+- Printer setup reports USB scanning, a missing printer, an unselected printer, or a missing network address. Test slips and manual drawer controls become available when a printer is configured, and the Printer tab asks you to save address changes before using them.
+- Station credentials stay with their original print server. Switching servers requires a new connection code.
+- Turning off network printer mode discards incomplete jobs and releases its listener immediately. Network-only tills skip background USB scans.
+- Updated SHA-256 and heapless dependencies. Release assets include the exact libusb source used by the build and instructions to rebuild with a modified copy.
+- Includes the network printer mode, CLI, headless mode, and Rust printing library developed since the published rc.4 build.
+
 ## 0.1.0
 
-`0.1.0-rc.1` to `0.1.0-rc.6` are test builds of this release. They have not been tried on real printers yet.
+Real-printer validation for the first stable release is still pending.
 
 First public release.
 
