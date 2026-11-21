@@ -704,6 +704,7 @@ mod tests {
             tcp_port: 9100,
             usb_id: None,
             listed: true,
+            printer_setup: crate::model::PrinterSetup::SelectUsb,
             tone: Tone::Problem,
             status: "192.168.1.50:9100: connection refused".to_string(),
             config_path: String::new(),

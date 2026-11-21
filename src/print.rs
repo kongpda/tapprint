@@ -13,7 +13,7 @@ use crate::raster::{self, MonoRaster};
 use crate::usb;
 
 pub fn refresh_printers(shared: &Shared) {
-    if shared.printer_busy() {
+    if !shared.uses_usb() || shared.printer_busy() {
         return;
     }
     list_printers(shared);
