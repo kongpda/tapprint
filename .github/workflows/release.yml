@@ -24,11 +24,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Tag matches Cargo.toml
+      - name: Tag matches package versions
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+          for manifest in Cargo.toml crates/tapprint-core/Cargo.toml; do
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -n 1)
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match $manifest version $version"
+              exit 1
+            fi
+          done
+          client=$(jq -r '.version' client/package.json)
+          if [ "v$client" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match client/package.json version $client"
             exit 1
           fi
 

@@ -1,6 +1,6 @@
 [package]
 name = "tapprint-core"
-version = "0.1.0-rc.6"
+version = "0.1.0-rc.7"
 edition = "2024"
 rust-version = "1.88"
 description = "Print a PNG receipt to a USB or network ESC/POS thermal printer. No printer driver."
