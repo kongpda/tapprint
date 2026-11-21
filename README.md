@@ -55,6 +55,7 @@ TapPrint listens only on this computer. A site can print only after the person a
 - [HTTP API](docs/api.md), for `curl` and servers
 - [Print from KHEvents](docs/server-printing.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Windows code signing](docs/windows-signing.md)
 - [Building from source](docs/building.md)
 - [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
