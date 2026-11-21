@@ -136,5 +136,10 @@ cargo build --release
 - `TAPPRINT_PRINT_SERVER_NAME` is shown in the window, as in
   **Print from My shop**. Default: `KHEvents`.
 
+TapPrint saves the server address with the station key. If you switch to a
+build that uses a different address, connect again with a code from that
+server. Existing KHEvents pairings from older builds carry forward when the
+server address is still `https://khevents.app`.
+
 A debug build (`cargo run`) can also use `TAPPRINT_SERVER=http://127.0.0.1:8000`
 at run time, for testing against a local server.

@@ -27,9 +27,10 @@ use crate::print;
 /// `TAPPRINT_PRINT_SERVER=https://print.example.com cargo build --release`.
 /// It is built in, not a setting, so no page or person at the till can send
 /// the station key somewhere else.
+pub const DEFAULT_SERVER: &str = "https://khevents.app";
 const SERVER: &str = match option_env!("TAPPRINT_PRINT_SERVER") {
     Some(address) => address,
-    None => "https://khevents.app",
+    None => DEFAULT_SERVER,
 };
 
 /// The server's name in the window, such as "KHEvents".
@@ -94,7 +95,7 @@ pub fn server() -> String {
     {
         return address.trim_end_matches('/').to_string();
     }
-    SERVER.to_string()
+    SERVER.trim_end_matches('/').to_string()
 }
 
 /// What one call to the server came back with.
@@ -128,9 +129,13 @@ impl Client {
             .build()
             .into();
         Self {
-            base: format!("{}{API}", base.trim_end_matches('/')),
+            base: base.trim_end_matches('/').to_string(),
             agent,
         }
+    }
+
+    fn endpoint(&self) -> &str {
+        &self.base
     }
 
     fn call(
@@ -142,7 +147,7 @@ impl Client {
         limit: u64,
         paper: Paper,
     ) -> Reply {
-        let url = format!("{}{path}", self.base);
+        let url = format!("{}{API}{path}", self.base);
         let bearer = token.map(|token| format!("Bearer {token}"));
         let result = match (method, body) {
             ("POST", body) => {
@@ -330,6 +335,7 @@ pub fn pair(shared: &Shared, client: &Client, typed: &str) -> Result<(), String>
                 ));
             }
             shared.connect_server(
+                client.endpoint(),
                 &token,
                 &clean(&paired.data.station.name, 60),
                 &clean(&paired.data.organizer.name, 80),
@@ -345,11 +351,16 @@ pub fn pair(shared: &Shared, client: &Client, typed: &str) -> Result<(), String>
 /// Stop printing for the server on this computer. The server is told when
 /// it can be reached; the key is forgotten here either way.
 pub fn disconnect(shared: &Shared, client: &Client) {
-    if let Some(token) = shared.server_token() {
+    if let Some(token) = shared.server_token(client.endpoint()) {
         let paper = shared.snapshot().paper;
+        shared.disconnect_server(
+            client.endpoint(),
+            &token,
+            &format!("Disconnected from {SERVER_NAME}"),
+            false,
+        );
         let _ = client.call("DELETE", "/", Some(&token), None, MAX_REPLY_BYTES, paper);
     }
-    shared.disconnect_server(&format!("Disconnected from {SERVER_NAME}"), false);
 }
 
 fn sentence(text: &str) -> String {
@@ -382,7 +393,7 @@ fn step(
     failures: &mut u32,
     last_heartbeat: &mut Option<std::time::Instant>,
 ) -> Duration {
-    let Some(token) = shared.server_token() else {
+    let Some(token) = shared.server_token(client.endpoint()) else {
         *failures = 0;
         return IDLE;
     };
@@ -405,7 +416,7 @@ fn step(
                 shared.set_link(Link::Online, "", false);
                 IDLE
             }
-            other => settle(shared, &token, other, failures),
+            other => settle(shared, client, &token, other, failures),
         };
     }
     match client.call(
@@ -446,16 +457,22 @@ fn step(
                 None => poll,
             }
         }
-        other => settle(shared, &token, other, failures),
+        other => settle(shared, client, &token, other, failures),
     }
 }
 
 /// A failed look: say why, and wait longer each time, up to 30 seconds.
-fn settle(shared: &Shared, token: &str, reply: Reply, failures: &mut u32) -> Duration {
+fn settle(
+    shared: &Shared,
+    client: &Client,
+    token: &str,
+    reply: Reply,
+    failures: &mut u32,
+) -> Duration {
     match reply {
         Reply::Ok(_) => IDLE,
         Reply::Unauthorized => {
-            shared.drop_server_token(token, REMOVED);
+            shared.disconnect_server(client.endpoint(), token, REMOVED, true);
             *failures = 0;
             IDLE
         }
@@ -535,7 +552,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
         let png = match client.call("GET", &path, Some(token), None, MAX_SLIP_BYTES, paper) {
             Reply::Ok(png) => png,
             Reply::Unauthorized => {
-                shared.drop_server_token(token, REMOVED);
+                shared.disconnect_server(client.endpoint(), token, REMOVED, true);
                 return;
             }
             Reply::Down(message) => {
@@ -628,7 +645,7 @@ fn report(
         ) {
             Reply::Down(_) => continue,
             Reply::Unauthorized => {
-                shared.drop_server_token(token, REMOVED);
+                shared.disconnect_server(client.endpoint(), token, REMOVED, true);
                 return;
             }
             _ => return,
@@ -845,7 +862,12 @@ mod tests {
         assert!(view.connected);
         assert_eq!(view.station, "Counter Mac");
         assert_eq!(view.organizer, "Arts Dept");
-        assert!(shared.server_token().unwrap().starts_with("kps_"));
+        assert!(
+            shared
+                .server_token(&server.base)
+                .unwrap()
+                .starts_with("kps_")
+        );
         let sent = &server.seen.lock().unwrap()[0];
         assert!(sent.2.contains("\"code\":\"ABCDEFGH\""));
     }
@@ -886,7 +908,9 @@ mod tests {
             ),
         ]);
         let shared = shared("prints", Some(port));
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         let (mut failures, mut beat) = (0, None);
         step(
             &shared,
@@ -935,7 +959,9 @@ mod tests {
             ),
         ]);
         let shared = shared("resume", Some(port));
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         assert_eq!(printer.join().unwrap().len(), 1);
         let asked: Vec<String> = server
@@ -973,7 +999,9 @@ mod tests {
             ),
         ]);
         let shared = shared("unreachable", None);
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         let reported = results(&server);
         assert_eq!(reported[0]["outcome"], "printer_busy");
@@ -1004,7 +1032,9 @@ mod tests {
             ),
         ]);
         let shared = shared("not-png", None);
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         assert_eq!(results(&server)[0]["outcome"], "printer_error");
     }
@@ -1013,30 +1043,56 @@ mod tests {
     fn a_removed_printer_forgets_its_key() {
         let server = fake_server(vec![("GET", "/next", 401, b"{}".to_vec())]);
         let shared = shared("removed", None);
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
-        assert!(shared.server_token().is_none());
+        assert!(shared.server_token(&server.base).is_none());
         assert!(shared.snapshot().status.contains("removed"));
     }
 
     #[test]
     fn a_reply_to_an_old_key_does_not_drop_a_new_one() {
         let shared = shared("old-key", None);
-        shared.connect_server("kps_new", "Counter", "Org").unwrap();
-        shared.drop_server_token("kps_old", REMOVED);
-        assert_eq!(shared.server_token().as_deref(), Some("kps_new"));
+        shared
+            .connect_server(DEFAULT_SERVER, "kps_new", "Counter", "Org")
+            .unwrap();
+        shared.disconnect_server(DEFAULT_SERVER, "kps_old", REMOVED, true);
+        assert_eq!(
+            shared.server_token(DEFAULT_SERVER).as_deref(),
+            Some("kps_new")
+        );
+    }
+
+    #[test]
+    fn a_client_for_a_different_endpoint_cannot_use_the_station_key() {
+        let server = fake_server(vec![]);
+        let shared = shared("different-endpoint", None);
+        shared
+            .connect_server(DEFAULT_SERVER, "kps_test", "Counter", "Org")
+            .unwrap();
+        let client = Client::new(&server.base);
+        assert_eq!(step(&shared, &client, &mut 0, &mut None), IDLE);
+        disconnect(&shared, &client);
+        assert!(server.seen.lock().unwrap().is_empty());
+        assert_eq!(
+            shared.server_token(DEFAULT_SERVER).as_deref(),
+            Some("kps_test")
+        );
     }
 
     #[test]
     fn server_printing_off_waits_a_minute_and_says_so() {
         let server = fake_server(vec![]);
         let shared = shared("disabled", None);
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         let wait = step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         assert_eq!(wait, DISABLED_WAIT);
         assert_eq!(shared.snapshot().server.link, Link::Disabled);
         // Still connected: turning it on again needs no new code.
-        assert!(shared.server_token().is_some());
+        assert!(shared.server_token(&server.base).is_some());
     }
 
     #[test]
@@ -1048,7 +1104,9 @@ mod tests {
             ("GET", "/", 200, b"{}".to_vec()),
         ]);
         let shared = shared("paused", None);
-        shared.connect_server("kps_test", "Counter", "Org").unwrap();
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
         shared.set_server_paused(true);
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         let asked: Vec<String> = server
@@ -1087,6 +1145,6 @@ mod tests {
         step(&shared, &client, &mut 0, &mut None);
         assert_eq!(shared.snapshot().server.link, Link::Online);
         disconnect(&shared, &client);
-        assert!(shared.server_token().is_none());
+        assert!(shared.server_token(&base).is_none());
     }
 }

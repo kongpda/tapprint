@@ -107,7 +107,10 @@ struct FileConfig {
     sites: Vec<Site>,
     /// Print from a server: this computer's print-station key. Empty while
     /// not connected. Like the codes above, it is kept in this file only.
+    #[serde(rename = "station_key", alias = "server_token")]
     server_token: String,
+    /// Older files could only pair with the built-in KHEvents server.
+    server_endpoint: String,
     /// The printer's name and organizer, as the print server gave them.
     server_station: String,
     server_organizer: String,
@@ -117,6 +120,24 @@ struct FileConfig {
 
 fn drawer_enabled_for_old_files() -> bool {
     true
+}
+
+impl FileConfig {
+    fn station_endpoint(&self) -> &str {
+        if self.server_endpoint.is_empty() {
+            crate::station::DEFAULT_SERVER
+        } else {
+            &self.server_endpoint
+        }
+    }
+
+    fn clear_station(&mut self) {
+        self.server_token.clear();
+        self.server_endpoint.clear();
+        self.server_station.clear();
+        self.server_organizer.clear();
+        self.server_paused = false;
+    }
 }
 
 impl Default for FileConfig {
@@ -141,6 +162,7 @@ impl Default for FileConfig {
             share_lan: false,
             sites: Vec::new(),
             server_token: String::new(),
+            server_endpoint: String::new(),
             server_station: String::new(),
             server_organizer: String::new(),
             server_paused: false,
@@ -340,7 +362,7 @@ impl Shared {
     }
 
     fn read_from(path: PathBuf, legacy: Option<PathBuf>) -> Result<Self, String> {
-        let (config, notice) = if path.exists() {
+        let (mut config, notice) = if path.exists() {
             read_config(&path)?
         } else if let Some(legacy) = legacy.filter(|legacy| legacy.exists()) {
             // Keep the pairing code from a Receipt Till install, so the till page
@@ -349,6 +371,10 @@ impl Shared {
         } else {
             (fresh_config()?, None)
         };
+        if !config.server_token.is_empty() && config.station_endpoint() != crate::station::server()
+        {
+            config.clear_station();
+        }
         Ok(Self::from_parts(config, path, notice))
     }
 
@@ -502,20 +528,23 @@ impl Shared {
     }
 
     /// The print-station key, while connected. Only the station thread reads it.
-    pub fn server_token(&self) -> Option<String> {
+    pub fn server_token(&self, endpoint: &str) -> Option<String> {
         let state = self.lock();
-        (!state.config.server_token.is_empty()).then(|| state.config.server_token.clone())
+        (!state.config.server_token.is_empty() && state.config.station_endpoint() == endpoint)
+            .then(|| state.config.server_token.clone())
     }
 
     /// Save the key the print server gave for a pairing code.
     pub fn connect_server(
         &self,
+        endpoint: &str,
         token: &str,
         station: &str,
         organizer: &str,
     ) -> Result<(), String> {
         {
             let mut state = self.lock();
+            state.config.server_endpoint = endpoint.to_string();
             state.config.server_token = token.to_string();
             state.config.server_station = station.to_string();
             state.config.server_organizer = organizer.to_string();
@@ -532,14 +561,13 @@ impl Shared {
     }
 
     /// Forget the key. `why` goes on the status line.
-    pub fn disconnect_server(&self, why: &str, problem: bool) {
+    pub fn disconnect_server(&self, endpoint: &str, token: &str, why: &str, problem: bool) {
         {
             let mut state = self.lock();
-            if state.config.server_token.is_empty() {
+            if state.config.station_endpoint() != endpoint || state.config.server_token != token {
                 return;
             }
-            state.config.server_token = String::new();
-            state.config.server_paused = false;
+            state.config.clear_station();
             state.link = Link::Off;
             state.link_note = String::new();
             state.paused_there = false;
@@ -547,14 +575,6 @@ impl Shared {
             state.status = why.to_string();
         }
         let _ = self.persist();
-    }
-
-    /// Forget the key only if it is still `token`. A reply to an old key must
-    /// not disconnect a pairing made a moment ago.
-    pub fn drop_server_token(&self, token: &str, why: &str) {
-        if self.server_token().as_deref() == Some(token) {
-            self.disconnect_server(why, true);
-        }
     }
 
     pub fn set_server_paused(&self, paused: bool) {
@@ -1592,6 +1612,18 @@ mod tests {
         assert!(check_host("").is_err());
         assert!(check_host("http://192.168.1.20").is_err());
         assert!(check_host("192.168.1.20/receipt").is_err());
+    }
+
+    #[test]
+    fn older_station_keys_belong_to_khevents() {
+        let mut config: FileConfig =
+            serde_json::from_str(r#"{"server_token":"kps_existing"}"#).unwrap();
+        assert_eq!(config.server_token, "kps_existing");
+        assert_eq!(config.station_endpoint(), crate::station::DEFAULT_SERVER);
+        config.server_endpoint = "https://print.example.com".into();
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(written["station_key"], "kps_existing");
+        assert!(written.get("server_token").is_none());
     }
 
     #[test]
