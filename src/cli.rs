@@ -169,6 +169,14 @@ fn agent() -> ureq::Agent {
 }
 
 fn not_running(error: &ureq::Error) -> String {
+    // A job that waits behind others, or for a slow printer, can outlast the
+    // timeout and still print. Saying "not running" would invite a retry
+    // that prints the receipt twice.
+    if matches!(error, ureq::Error::Timeout(_)) {
+        return format!(
+            "TapPrint did not answer in time. The receipt may still print: check the paper before trying again. ({error})"
+        );
+    }
     format!("TapPrint is not running. Open it, then try again. ({error})")
 }
 

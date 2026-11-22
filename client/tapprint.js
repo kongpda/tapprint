@@ -84,7 +84,12 @@ export class TapPrint {
       // No such event here (a worker or a test). The plain message is used.
     }
     this.storageKey = storageKey;
-    this.clientName = clientName;
+    // A header holds only Latin-1, and TapPrint shows only these characters.
+    // Anything else (a name in Khmer, say) would make every call fail.
+    this.clientName = String(clientName ?? "")
+      .replace(/[^A-Za-z0-9 .-]/g, "")
+      .trim()
+      .slice(0, 40) || undefined;
     /** A code passed in the options. It belongs to the caller and is never forgotten. */
     this.givenCode = code;
     /** Used only when localStorage is blocked. @type {string|undefined} */
@@ -147,6 +152,8 @@ export class TapPrint {
             await fetch(`${base}/v1/status`, { method: "GET" });
             this.base = base;
             this.settled = true;
+            // A policy that blocked the other address does not block this one.
+            this.cspBlocked = false;
             return base;
           } catch {
             // Not reachable this way. Try the next one.

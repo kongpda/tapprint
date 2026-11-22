@@ -105,6 +105,18 @@ test("pairing stores the code, and later calls send it", async () => {
   });
 });
 
+test("a shop name the header cannot carry is cleaned, not turned into a failure", async () => {
+  // fetch refuses a header with non-Latin-1 text. Left as is, a name in
+  // Khmer made every call report "Cannot reach TapPrint".
+  const sent = [];
+  const inner = globalThis.fetch;
+  globalThis.fetch = (url, init) => (sent.push(init.headers), inner(url, init));
+  await new TapPrint({ clientName: "ហាង Cafe 1" }).pair();
+  assert.equal(sent.at(-1)["X-Till-Client"], "Cafe 1");
+  await new TapPrint({ clientName: "ហាង" }).pair();
+  assert.equal("X-Till-Client" in sent.at(-1), false);
+});
+
 test("a rejected code is forgotten, unless another tab stored a newer one", async () => {
   store.set("tapprint.code", "old");
   const till = new TapPrint();

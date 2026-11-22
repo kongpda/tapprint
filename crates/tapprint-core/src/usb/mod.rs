@@ -344,8 +344,9 @@ mod libusb {
     }
 
     /// On failure, also says whether any bytes reached the printer. rusb does
-    /// not report how much of a timed-out chunk went out, so a failure on a
-    /// later chunk, or a timeout, counts as partial.
+    /// not report how much of a failed chunk went out, and a printer unplugged
+    /// mid-chunk fails with `NoDevice` or `Io`, not `Timeout`. So any failure
+    /// once a write was issued counts as partial: a retry could print twice.
     fn write_all(
         handle: &rusb::DeviceHandle<rusb::Context>,
         endpoint: u8,
@@ -359,10 +360,7 @@ mod libusb {
             match handle.write_bulk(endpoint, chunk, timeout) {
                 Ok(0) => return Err((rusb::Error::Io, offset > 0)),
                 Ok(wrote) => offset += wrote,
-                Err(error) => {
-                    let partial = offset > 0 || error == rusb::Error::Timeout;
-                    return Err((error, partial));
-                }
+                Err(error) => return Err((error, true)),
             }
         }
         Ok(())
