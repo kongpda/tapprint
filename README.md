@@ -13,6 +13,7 @@ TapPrint is a tray app for macOS, Windows, and Linux. Your page sends a receipt 
    - **USB:** set the printer's USB port to **Printer Class**.
    - **Network:** choose **Network**. TapPrint looks for printers on your network; click yours. Or type its address.
 3. Click **Print test**.
+4. Open **Settings** and turn on **Start at login**, so TapPrint is running after the computer restarts.
 
 Nothing is installed on Windows or Linux: it is one program file you can run from any folder. Linux needs a udev rule for USB printers. See [docs/building.md](docs/building.md#linux-usb-notes).
 

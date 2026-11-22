@@ -91,8 +91,8 @@ pub fn write(id: &str, bytes: &[u8], check_paper: bool) -> Result<(), JobError> 
                 ));
             }
             Ok(wrote) => offset = offset.saturating_add(wrote),
-            Err((message, timed_out)) => {
-                return Err(failed(&file, &event, &message, offset > 0 || timed_out));
+            Err((message, maybe_sent)) => {
+                return Err(failed(&file, &event, &message, offset > 0 || maybe_sent));
             }
         }
     }
@@ -158,9 +158,11 @@ fn write_chunk(file: &File, event: &Event, chunk: &[u8]) -> Result<usize, (Strin
                 true,
             )
         } else {
+            // The request was already under way, so part of the chunk may
+            // have reached the printer.
             (
                 "the printer was unplugged or refused the data".to_string(),
-                false,
+                true,
             )
         }
     })

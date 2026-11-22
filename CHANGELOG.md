@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- A USB write that fails after it started is reported as "check the paper", not as safe to retry, so a server job is not printed twice.
+- A print-server job with an unreadable field is reported and skipped instead of stopping every later job. A job that cannot be reported no longer makes TapPrint ask for it several times a second.
+- A second printer of the same model is no longer taken for the receipt printer when that one is switched off.
+- The browser client cleans `clientName` to what the header can carry, so a name in Khmer or another script no longer makes every call fail as unreachable. A Content-Security-Policy warning no longer sticks after HTTPS works.
+- `tapprint print` says a timed-out job may still print, instead of "not running".
+- Clearer message for a damaged settings file. The README and troubleshooting guide cover Start at login, a site turned down by mistake, and updates for test builds.
+
 ## 0.1.0-rc.7
 
 - Printer setup reports USB scanning, a missing printer, an unselected printer, or a missing network address. Test slips and manual drawer controls become available when a printer is configured, and the Printer tab asks you to save address changes before using them.

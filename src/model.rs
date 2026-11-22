@@ -714,12 +714,22 @@ impl Shared {
             // A printer moved to another port comes back with a new id. When it
             // is the only printer and the same model, follow it. A different
             // model is a different printer, so the cashier must choose it.
+            // Only follow when the last scan saw no other printer: a second
+            // printer of the same model (say, in the kitchen) that was already
+            // there is not the receipt printer coming back.
+            let no_other_before = state.listed
+                && state
+                    .printers
+                    .iter()
+                    .all(|(id, _)| saved.as_deref() == Some(id.as_str()));
             let mut missing = false;
             if !saved_present && let [(only, _)] = printers.as_slice() {
+                // With nothing saved yet, the only printer is the one to use.
                 let same_model = saved.as_deref().is_none_or(|saved| {
-                    crate::usb::model_of(saved).is_some_and(|model| {
-                        crate::usb::model_of(only).is_some_and(|found| found == model)
-                    })
+                    no_other_before
+                        && crate::usb::model_of(saved).is_some_and(|model| {
+                            crate::usb::model_of(only).is_some_and(|found| found == model)
+                        })
                 });
                 if same_model {
                     state.config.usb_id = Some(only.clone());
@@ -1200,7 +1210,7 @@ fn read_config(path: &Path) -> Result<(FileConfig, Option<String>), String> {
     })?;
     let mut config: FileConfig = serde_json::from_slice(&body).map_err(|_| {
         format!(
-            "could not read settings in {}. They were left unchanged.",
+            "could not read settings in {}. They were left unchanged. Fix the file, or rename it to start with fresh settings (allowed websites and the printer are then chosen again).",
             path.display()
         )
     })?;
@@ -1736,6 +1746,22 @@ mod tests {
             ("04b8:0e15:1:9".to_string(), "USB".to_string()),
         ]);
         assert_eq!(shared.snapshot().usb_id.as_deref(), Some("04b8:0202:1:7"));
+    }
+
+    #[test]
+    fn a_second_printer_of_the_same_model_is_not_taken_for_the_first() {
+        // Two identical printers: one for receipts, one in the kitchen. When
+        // the receipt printer is switched off, receipts must not quietly start
+        // coming out in the kitchen, and must not stay there once it is back.
+        let shared = Shared::load_from(isolated("same-model"), None).unwrap();
+        let receipt = ("04b8:0202:1-4".to_string(), "USB".to_string());
+        let kitchen = ("04b8:0202:1-5".to_string(), "USB".to_string());
+        shared.set_printers(vec![receipt.clone()]);
+        shared.set_printers(vec![receipt.clone(), kitchen.clone()]);
+        shared.set_printers(vec![kitchen]);
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.usb_id.as_deref(), Some(receipt.0.as_str()));
+        assert_eq!(snapshot.status, CHOOSE_PRINTER);
     }
 
     #[test]

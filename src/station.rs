@@ -260,7 +260,9 @@ struct Next {
     paused: bool,
     #[serde(default)]
     poll_seconds: Option<u64>,
-    job: Option<Job>,
+    /// Read on its own, so one job with an odd field is reported and
+    /// skipped instead of making every answer unreadable.
+    job: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -448,13 +450,20 @@ fn step(
             };
             shared.set_link(Link::Online, note, next.paused);
             let poll = Duration::from_secs(next.poll_seconds.unwrap_or(2).clamp(1, 30));
-            match next.job {
-                Some(job) => {
-                    run_job(shared, client, &token, &job);
-                    // There may be more waiting: look again straight away.
-                    Duration::from_millis(200)
-                }
-                None => poll,
+            let Some(job) = next.job else {
+                return poll;
+            };
+            let reported = match serde_json::from_value::<Job>(job.clone()) {
+                Ok(job) => run_job(shared, client, &token, &job),
+                Err(_) => unreadable_job(shared, client, &token, &job),
+            };
+            if reported {
+                // There may be more waiting: look again straight away.
+                Duration::from_millis(200)
+            } else {
+                // The server still holds this job. Asking again at once
+                // would only fetch it again, several times a second.
+                poll
             }
         }
         other => settle(shared, client, &token, other, failures),
@@ -508,11 +517,36 @@ fn outcome_for(error: &JobError) -> (&'static str, ServerOutcome) {
     }
 }
 
+/// A job whose fields cannot be read. Reported as an error when its id is
+/// usable, so the queue moves on. Returns whether a report was sent.
+fn unreadable_job(shared: &Shared, client: &Client, token: &str, job: &serde_json::Value) -> bool {
+    let Some(id) = job["id"].as_str().filter(|id| valid_id(id)) else {
+        // Never put an odd id in a URL. The server's hold on it lapses.
+        return false;
+    };
+    let first_slip = job["first_slip"]
+        .as_u64()
+        .and_then(|slip| u32::try_from(slip).ok())
+        .unwrap_or(0);
+    report(
+        shared,
+        client,
+        token,
+        id,
+        "printer_error",
+        first_slip,
+        Some("TapPrint could not read this job"),
+    );
+    shared.note_server_job("Print job", "", ServerOutcome::Failed);
+    true
+}
+
 /// Print one job's slips, from where an earlier try stopped, and report.
-fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
+/// Returns whether the job was reported, so the queue has moved on.
+fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
     if !valid_id(&job.id) {
         // Never put an odd id in a URL. The server's hold on it lapses.
-        return;
+        return false;
     }
     let summary = match clean(&job.summary, 80) {
         text if text.is_empty() => "Print job".to_string(),
@@ -534,7 +568,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
             Some("TapPrint could not read this job"),
         );
         shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-        return;
+        return true;
     }
     let paper = job
         .paper_mm
@@ -553,7 +587,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
             Reply::Ok(png) => png,
             Reply::Unauthorized => {
                 shared.disconnect_server(client.endpoint(), token, REMOVED, true);
-                return;
+                return false;
             }
             Reply::Down(message) => {
                 // Nothing of this slip printed. If the report cannot get
@@ -568,12 +602,12 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
                     Some(&format!("Could not download the slip: {message}")),
                 );
                 shared.note_server_job(&summary, &sender, ServerOutcome::Retrying);
-                return;
+                return true;
             }
             Reply::Disabled | Reply::Refused(_) => {
                 // The job was cancelled or taken back. Stop here.
                 shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-                return;
+                return false;
             }
         };
         if !png.starts_with(PNG_SIGNATURE) {
@@ -587,7 +621,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
                 Some("The server sent something that is not a picture"),
             );
             shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-            return;
+            return true;
         }
         if let Err(error) = print::print_png(shared, &png, options) {
             let (outcome, shown) = outcome_for(&error);
@@ -601,7 +635,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
                 Some(&error.message),
             );
             shared.note_server_job(&summary, &sender, shown);
-            return;
+            return true;
         }
         printed += 1;
     }
@@ -613,6 +647,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) {
         format!(" from {sender}")
     };
     shared.set_status(Tone::Ready, format!("Printed {summary}{from}"));
+    true
 }
 
 /// Tell the server what happened. Tried three times: a lost "printed"
@@ -1037,6 +1072,45 @@ mod tests {
             .unwrap();
         step(&shared, &Client::new(&server.base), &mut 0, &mut None);
         assert_eq!(results(&server)[0]["outcome"], "printer_error");
+    }
+
+    #[test]
+    fn one_unreadable_job_is_reported_and_does_not_block_the_queue() {
+        // `null` where a text belongs used to make the whole answer
+        // unreadable, so the same job came back forever and nothing printed.
+        let job = serde_json::json!({"id": ID, "summary": null, "slip_count": 1});
+        let server = fake_server(vec![
+            ("GET", "/next", 200, next_with(job)),
+            (
+                "POST",
+                "/jobs/01JD3V4X5Y6Z7A8B9C0D1E2F3G/result",
+                200,
+                b"{}".to_vec(),
+            ),
+        ]);
+        let shared = shared("unreadable-job", None);
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
+        let wait = step(&shared, &Client::new(&server.base), &mut 0, &mut None);
+        assert_eq!(results(&server)[0]["outcome"], "printer_error");
+        // Reported, so the next job is asked for at once.
+        assert!(wait < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_job_that_cannot_be_reported_is_not_fetched_again_at_once() {
+        // An id that cannot go into a URL is never reported. Asking again
+        // straight away would fetch the same job several times a second.
+        let job = serde_json::json!({"id": "../../x", "slip_count": 1});
+        let server = fake_server(vec![("GET", "/next", 200, next_with(job))]);
+        let shared = shared("bad-id", None);
+        shared
+            .connect_server(&server.base, "kps_test", "Counter", "Org")
+            .unwrap();
+        let wait = step(&shared, &Client::new(&server.base), &mut 0, &mut None);
+        assert!(wait >= Duration::from_secs(1));
+        assert!(results(&server).is_empty());
     }
 
     #[test]
