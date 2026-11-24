@@ -582,18 +582,21 @@ struct TillView {
 struct Preview {
     name: String,
     paper: Paper,
-    raster: Arc<MonoRaster>,
-    image: Arc<RenderImage>,
+    pages: Arc<Vec<MonoRaster>>,
+    images: Vec<Arc<RenderImage>>,
 }
 
 impl Preview {
-    fn new(name: String, paper: Paper, raster: MonoRaster) -> Self {
-        let image = Arc::new(RenderImage::new(vec![Frame::new(raster_pixels(&raster))]));
+    fn new(name: String, paper: Paper, pages: Vec<MonoRaster>) -> Self {
+        let images = pages
+            .iter()
+            .map(|page| Arc::new(RenderImage::new(vec![Frame::new(raster_pixels(page))])))
+            .collect();
         Self {
             name,
             paper,
-            raster: Arc::new(raster),
-            image,
+            pages: Arc::new(pages),
+            images,
         }
     }
 }
@@ -735,7 +738,7 @@ impl TillView {
         self.pull(cx);
     }
 
-    /// Pick a PNG or JPEG and show what will print. Only the person at the
+    /// Pick a PNG, JPEG or PDF and show what will print. Only the person at the
     /// till can start this; pages and the print server cannot.
     fn open_file(&mut self, cx: &mut Context<Self>) {
         if self.loading_file {
@@ -777,7 +780,7 @@ impl TillView {
                         |name| name.to_string_lossy().into_owned(),
                     );
                     print::load_file(&path, paper)
-                        .map(|raster| Preview::new(name.clone(), paper, raster))
+                        .map(|pages| Preview::new(name.clone(), paper, pages))
                         .map_err(|error| format!("Could not open {name}: {error}"))
                 })
                 .await;
@@ -798,10 +801,10 @@ impl TillView {
         let Some(preview) = &self.preview else {
             return;
         };
-        let raster = Arc::clone(&preview.raster);
+        let pages = Arc::clone(&preview.pages);
         let paper = preview.paper;
         run_job(cx, "Printing the file", move |shared| {
-            print::print_loaded(shared, &raster, paper)
+            print::print_loaded(shared, &pages, paper)
         });
         self.pull(cx);
     }
@@ -812,25 +815,42 @@ impl TillView {
         preview: &Preview,
         can_print: bool,
     ) -> gpui::Div {
-        // Half a logical pixel per dot: 256 px across for 80 mm paper.
-        let width = f32::from(preview.raster.width_bytes) * 4.;
-        let height = preview.raster.height as f32 / 2.;
         // 8 dots per millimetre on these heads.
-        let length_cm = preview.raster.height.div_ceil(80);
+        let length_cm = preview
+            .pages
+            .iter()
+            .map(|page| page.height)
+            .sum::<u32>()
+            .div_ceil(80);
+        let summary = match preview.pages.len() {
+            1 => format!("about {length_cm} cm"),
+            count => format!("{count} slips, about {length_cm} cm"),
+        };
+        // Half a logical pixel per dot: 256 px across for 80 mm paper.
+        let pages = preview
+            .pages
+            .iter()
+            .zip(&preview.images)
+            .map(|(page, image)| {
+                img(ImageSource::Render(Arc::clone(image)))
+                    .w(px(f32::from(page.width_bytes) * 4.))
+                    .h(px(page.height as f32 / 2.))
+                    .border_1()
+                    .border_color(rgb(SOFT))
+            });
         card()
             .child(
                 row()
                     .child(div().text_sm().truncate().child(preview.name.clone()))
-                    .child(hint(format!("about {length_cm} cm"))),
+                    .child(hint(summary)),
             )
             .child(
-                div().flex().justify_center().child(
-                    img(ImageSource::Render(Arc::clone(&preview.image)))
-                        .w(px(width))
-                        .h(px(height))
-                        .border_1()
-                        .border_color(rgb(SOFT)),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
+                    .children(pages),
             )
             .child(
                 div()
@@ -1500,7 +1520,7 @@ impl TillView {
             if self.loading_file {
                 "Opening…"
             } else {
-                "Open a picture…"
+                "Open a file…"
             },
             if self.loading_file {
                 Kind::Disabled

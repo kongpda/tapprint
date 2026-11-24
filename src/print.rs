@@ -73,23 +73,34 @@ pub fn print_png(shared: &Shared, png: &[u8], options: Options) -> Result<(), Jo
 /// about 20 MB.
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 
-/// Decode a PNG or JPEG the person at the till picked in the window, for the
-/// preview. Pages and the print server never reach this: they send PNG
-/// through `print_png`.
-pub fn load_file(path: &Path, paper: Paper) -> Result<MonoRaster, String> {
+/// Decode a PNG, JPEG or PDF the person at the till picked in the window,
+/// one raster per page, for the preview. Pages and the print server never
+/// reach this: they send PNG through `print_png`.
+pub fn load_file(path: &Path, paper: Paper) -> Result<Vec<MonoRaster>, String> {
     let bytes = read_file(path)?;
-    raster::file_to_raster(&bytes, paper.dots()).map_err(|error| error.0)
+    raster::file_to_rasters(&bytes, paper.dots()).map_err(|error| error.0)
 }
 
-/// Print the previewed file. It was fitted to `paper`, so a roll changed in
-/// the meantime would print it the wrong width.
-pub fn print_loaded(shared: &Shared, raster: &MonoRaster, paper: Paper) -> Result<(), String> {
+/// Print the previewed pages, each cut as its own slip. They were fitted to
+/// `paper`, so a roll changed in the meantime would print them the wrong width.
+/// The first failure stops the rest, so a jam does not feed more pages.
+pub fn print_loaded(shared: &Shared, pages: &[MonoRaster], paper: Paper) -> Result<(), String> {
     if shared.snapshot().paper != paper {
         let message = "The paper size changed. Open the file again.";
         shared.set_status(Tone::Problem, message);
         return Err(message.to_string());
     }
-    print_raster(shared, raster, true, false).map_err(|error| error.message)
+    for (index, page) in pages.iter().enumerate() {
+        if let Err(error) = print_raster(shared, page, true, false) {
+            if pages.len() == 1 {
+                return Err(error.message);
+            }
+            let message = format!("Page {} of {}: {}", index + 1, pages.len(), error.message);
+            shared.set_status(Tone::Problem, message.as_str());
+            return Err(message);
+        }
+    }
+    Ok(())
 }
 
 fn read_file(path: &Path) -> Result<Vec<u8>, String> {

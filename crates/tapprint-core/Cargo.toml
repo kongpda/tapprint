@@ -12,6 +12,10 @@ keywords = ["thermal-printer", "escpos", "receipt", "pos", "usb"]
 categories = ["hardware-support"]
 
 [dependencies]
+# Draws PDF pages for files opened in the window. Pure Rust, so nothing extra
+# ships beside the program. `embed-fonts` carries the 14 standard PDF fonts:
+# without them, text in a PDF that does not embed Helvetica or Times is lost.
+hayro = { version = "0.9", default-features = false, features = ["embed-fonts"] }
 # JPEG only for files opened in the window. Pages and servers send PNG.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Not imported. Listed only for `vendored`, so rusb links a bundled libusb

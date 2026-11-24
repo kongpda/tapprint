@@ -1,10 +1,17 @@
-//! Turn a receipt PNG into a 1-bit image a thermal head can burn.
+//! Turn a receipt PNG, or a file opened in the window, into a 1-bit image a
+//! thermal head can burn.
 
 use std::io::Cursor;
 
+use hayro::hayro_interpret::InterpreterSettings;
+use hayro::hayro_syntax::{LoadPdfError, Pdf};
+use hayro::vello_cpu::color::palette::css::WHITE;
+use hayro::vello_cpu::peniko::ImageAlphaType;
+use hayro::{PixmapSettings, RenderCache, RenderSettings, render};
 use image::imageops::FilterType;
 use image::{
     DynamicImage, GrayImage, ImageDecoder as _, ImageError, ImageFormat, ImageReader, Limits, Luma,
+    RgbaImage,
 };
 
 /// Dots across the TM-T88V head. 80 mm paper is 512 dots; 58 mm paper is 360.
@@ -47,18 +54,95 @@ pub fn png_to_raster(
     finish(decode_png(png)?, max_width_dots, dither)
 }
 
-/// Decode a PNG or JPEG file the person at the till opened in the window, and
-/// fit it to the head width.
+/// A PDF with more pages than this is refused. Each page is a slip of its own.
+const MAX_PDF_PAGES: usize = 50;
+
+/// Decode a PNG, JPEG or PDF the person at the till opened in the window, and
+/// fit each page to the head width. An image is one page.
 ///
 /// Only for files picked by hand. Pages and the print server send PNG through
-/// [`png_to_raster`], so this wider decoder never sees their bytes.
+/// [`png_to_raster`], so these wider decoders never see their bytes.
 ///
-/// A JPEG is almost always a photo, so it is dithered. A PNG is usually a
-/// screenshot or a document, so it keeps the plain cut-off for sharp text.
-pub fn file_to_raster(bytes: &[u8], max_width_dots: u32) -> Result<MonoRaster, RasterError> {
+/// A JPEG is almost always a photo, so it is dithered. A PNG or PDF is usually
+/// a screenshot or a document, so it keeps the plain cut-off for sharp text.
+pub fn file_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRaster>, RasterError> {
     check_width(max_width_dots)?;
+    if is_pdf(bytes) {
+        return pdf_to_rasters(bytes, max_width_dots);
+    }
     let (image, format) = decode_file(bytes)?;
-    finish(image, max_width_dots, format == ImageFormat::Jpeg)
+    Ok(vec![finish(
+        image,
+        max_width_dots,
+        format == ImageFormat::Jpeg,
+    )?])
+}
+
+/// PDF readers accept the header anywhere in the first 1 024 bytes.
+fn is_pdf(bytes: &[u8]) -> bool {
+    bytes
+        .get(..1_024)
+        .unwrap_or(bytes)
+        .windows(5)
+        .any(|window| window == b"%PDF-")
+}
+
+fn pdf_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRaster>, RasterError> {
+    let pdf = Pdf::new(bytes.to_vec()).map_err(|error| {
+        RasterError(
+            match error {
+                LoadPdfError::Decryption(_) => "password-protected PDFs cannot be printed",
+                LoadPdfError::Invalid => "the PDF could not be read",
+            }
+            .to_string(),
+        )
+    })?;
+    let pages = pdf.pages();
+    if pages.is_empty() {
+        return Err(RasterError("the PDF has no pages".to_string()));
+    }
+    if pages.len() > MAX_PDF_PAGES {
+        return Err(RasterError(format!(
+            "the PDF has {} pages; up to {MAX_PDF_PAGES} can be printed",
+            pages.len()
+        )));
+    }
+    let cache = RenderCache::new();
+    let interpreter = InterpreterSettings::default();
+    let render_settings = RenderSettings::default();
+    pages
+        .iter()
+        .map(|page| {
+            let (width, height) = page.render_dimensions();
+            if !(width >= 1.0 && height >= 1.0) {
+                return Err(RasterError("a PDF page is empty".to_string()));
+            }
+            let scale = max_width_dots as f32 / width;
+            // Refuse before drawing: a very long page would be drawn in full first.
+            if height * scale > MAX_HEIGHT as f32 {
+                return Err(RasterError("a PDF page is too long for a slip".to_string()));
+            }
+            let pixmap = render(
+                page,
+                &cache,
+                &interpreter,
+                &render_settings,
+                &PixmapSettings {
+                    x_scale: scale,
+                    y_scale: scale,
+                    bg_color: WHITE,
+                },
+            );
+            let (width, height) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
+            let rgba = RgbaImage::from_raw(
+                width,
+                height,
+                pixmap.take_rgba8(ImageAlphaType::AlphaPremultiplied),
+            )
+            .ok_or_else(|| RasterError("a PDF page could not be drawn".to_string()))?;
+            finish(DynamicImage::ImageRgba8(rgba), max_width_dots, false)
+        })
+        .collect()
 }
 
 fn check_width(max_width_dots: u32) -> Result<(), RasterError> {
@@ -144,7 +228,7 @@ fn decode_file(bytes: &[u8]) -> Result<(DynamicImage, ImageFormat), RasterError>
         Some(format @ (ImageFormat::Png | ImageFormat::Jpeg)) => format,
         _ => {
             return Err(RasterError(
-                "only PNG and JPEG files can be printed".to_string(),
+                "only PNG, JPEG and PDF files can be printed".to_string(),
             ));
         }
     };
@@ -509,7 +593,7 @@ mod tests {
 
     #[test]
     fn an_opened_jpeg_prints() {
-        let raster = file_to_raster(&jpeg_square(0), 16).unwrap();
+        let raster = file_to_rasters(&jpeg_square(0), 16).unwrap().remove(0);
         assert_eq!(raster.width_bytes, 2);
         assert_eq!(raster.height, 16);
         assert!(raster.packed.iter().all(|byte| *byte == 0xFF));
@@ -518,7 +602,7 @@ mod tests {
     // A grey photo must come out as a dot pattern, not a solid black block.
     #[test]
     fn an_opened_jpeg_is_dithered() {
-        let raster = file_to_raster(&jpeg_square(128), 16).unwrap();
+        let raster = file_to_rasters(&jpeg_square(128), 16).unwrap().remove(0);
         assert!(raster.packed.iter().any(|byte| *byte != 0xFF));
         assert!(raster.packed.iter().any(|byte| *byte != 0x00));
     }
@@ -526,13 +610,69 @@ mod tests {
     // A screenshot keeps the plain cut-off, so grey text burns solid.
     #[test]
     fn an_opened_png_is_not_dithered() {
-        let raster = file_to_raster(&png_row(&[128; 8]), 8).unwrap();
+        let raster = file_to_rasters(&png_row(&[128; 8]), 8).unwrap().remove(0);
         assert_eq!(raster.packed, vec![0xFF]);
     }
 
     #[test]
     fn an_opened_file_of_another_kind_is_refused() {
-        let error = file_to_raster(b"%PDF-1.7 not an image", 8).unwrap_err();
-        assert_eq!(error.0, "only PNG and JPEG files can be printed");
+        let error = file_to_rasters(b"GIF89a not printable", 8).unwrap_err();
+        assert_eq!(error.0, "only PNG, JPEG and PDF files can be printed");
+    }
+
+    /// Two pages, the first with a black box filling its left half. Built by
+    /// hand with exact byte offsets, so the test needs no PDF writer.
+    fn two_page_pdf() -> Vec<u8> {
+        let content = "0 g 0 0 50 200 re f";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 200] /Contents 5 0 R >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 200] >>".to_string(),
+            format!(
+                "<< /Length {} >>\nstream\n{content}\nendstream",
+                content.len()
+            ),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    // Each PDF page is a slip of its own, fitted to the paper, and drawn where
+    // the page puts it: black on the left half, white on the right.
+    #[test]
+    fn an_opened_pdf_prints_a_slip_per_page() {
+        let pages = file_to_rasters(&two_page_pdf(), 16).unwrap();
+        assert_eq!(pages.len(), 2);
+        let first = &pages[0];
+        assert_eq!(first.width_bytes, 2);
+        assert_eq!(first.height, 32);
+        assert!(first.packed.chunks(2).all(|row| row == [0xFF, 0x00]));
+        assert!(pages[1].packed.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn a_broken_pdf_is_refused() {
+        let error = file_to_rasters(b"%PDF-1.7 truncated", 8).unwrap_err();
+        assert_eq!(error.0, "the PDF could not be read");
     }
 }
