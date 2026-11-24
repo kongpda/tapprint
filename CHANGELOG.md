@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Open a file…** on the Printer tab opens a PNG, JPEG or PDF from this computer and shows it exactly as it will print, then **Print** sends it at the paper width. Each PDF page prints as its own slip, up to 50 pages. Photos are dithered, and phone photos print the right way up. Pages and the print server still send only PNG.
+- **Open a file…** on the Printer tab opens a PNG, JPEG or PDF from this computer and shows it exactly as it will print, then **Print** sends it at the paper width. Each PDF page prints as its own slip, up to 50 pages and 5 m of paper. Photos are dithered, and phone photos print the right way up. Pages and the print server still send only PNG.
 - A USB write that fails after it started is reported as "check the paper", not as safe to retry, so a server job is not printed twice.
 - A print-server job with an unreadable field is reported and skipped instead of stopping every later job. A job that cannot be reported no longer makes TapPrint ask for it several times a second.
 - A second printer of the same model is no longer taken for the receipt printer when that one is switched off.

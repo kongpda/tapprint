@@ -120,30 +120,38 @@ fn pdf_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRaster>, 
             pages.len()
         )));
     }
-    let cache = RenderCache::new();
-    let interpreter = InterpreterSettings::default();
-    let render_settings = RenderSettings::default();
-    let started = Instant::now();
+    // Measure every page before drawing any: a refusal should not wait for
+    // the pages before it to be drawn.
     let mut total = 0f32;
-    pages
+    let scales = pages
         .iter()
         .map(|page| {
-            if started.elapsed() > PDF_TIME_BUDGET {
-                return Err(RasterError("the PDF takes too long to draw".to_string()));
-            }
             let (width, height) = page.render_dimensions();
             if !(width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0) {
                 return Err(RasterError("a PDF page is empty".to_string()));
             }
             let scale = max_width_dots as f32 / width;
-            // Refuse before drawing: a very long page would be drawn in full first.
             let scaled = height * scale;
             if scaled > MAX_HEIGHT as f32 {
                 return Err(RasterError("a PDF page is too long for a slip".to_string()));
             }
             total += scaled;
-            if total > MAX_FILE_DOTS as f32 {
-                return Err(RasterError(too_long_message()));
+            Ok(scale)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if total > MAX_FILE_DOTS as f32 {
+        return Err(RasterError(too_long_message()));
+    }
+    let cache = RenderCache::new();
+    let interpreter = InterpreterSettings::default();
+    let render_settings = RenderSettings::default();
+    let started = Instant::now();
+    pages
+        .iter()
+        .zip(scales)
+        .map(|(page, scale)| {
+            if started.elapsed() > PDF_TIME_BUDGET {
+                return Err(RasterError("the PDF takes too long to draw".to_string()));
             }
             let pixmap = render(
                 page,
@@ -650,17 +658,36 @@ mod tests {
     /// Two pages, the first with a black box filling its left half. Built by
     /// hand with exact byte offsets, so the test needs no PDF writer.
     fn two_page_pdf() -> Vec<u8> {
-        let content = "0 g 0 0 50 200 re f";
-        let objects = [
+        pdf_of_pages(2, 200)
+    }
+
+    /// The first page is black on its left half; the others are blank.
+    /// Pages are 100 points wide and `height` points tall.
+    fn pdf_of_pages(count: usize, height: u32) -> Vec<u8> {
+        let content = format!("0 g 0 0 50 {height} re f");
+        let contents = count + 3;
+        let kids = (3..contents)
+            .map(|id| format!("{id} 0 R"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut objects = vec![
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-            "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 200] /Contents 5 0 R >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 200] >>".to_string(),
-            format!(
-                "<< /Length {} >>\nstream\n{content}\nendstream",
-                content.len()
-            ),
+            format!("<< /Type /Pages /Kids [{kids}] /Count {count} >>"),
         ];
+        for index in 0..count {
+            let drawn = if index == 0 {
+                format!(" /Contents {contents} 0 R")
+            } else {
+                String::new()
+            };
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 {height}]{drawn} >>"
+            ));
+        }
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len()
+        ));
         let mut pdf = b"%PDF-1.4\n".to_vec();
         let mut offsets = Vec::new();
         for (index, object) in objects.iter().enumerate() {
@@ -701,6 +728,21 @@ mod tests {
     fn a_broken_pdf_is_refused() {
         let error = file_to_rasters(b"%PDF-1.7 truncated", 8).unwrap_err();
         assert_eq!(error.0, "the PDF could not be read");
+    }
+
+    // Six pages that each fit a slip, but together run past 5 m: refused
+    // whole, before any page is drawn, so the preview never holds them.
+    #[test]
+    fn a_pdf_longer_than_the_file_limit_is_refused() {
+        // 100 x 1 400 points at 512 dots is 7 168 dots a page, 43 008 in all.
+        let error = file_to_rasters(&pdf_of_pages(6, 1_400), DOTS_80MM).unwrap_err();
+        assert_eq!(error.0, too_long_message());
+        assert_eq!(
+            file_to_rasters(&pdf_of_pages(5, 1_400), DOTS_80MM)
+                .unwrap()
+                .len(),
+            5
+        );
     }
 
     // Metadata can hold "%PDF-": the image's own signature must decide.
