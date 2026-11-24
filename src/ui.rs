@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, FontWeight, Global,
-    KeyBinding, Menu, MenuItem, SharedString, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowHandle, WindowOptions, actions, div, hsla, prelude::*, px, rgb, size,
+    ImageSource, KeyBinding, Menu, MenuItem, PathPromptOptions, RenderImage, SharedString,
+    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, actions, div,
+    hsla, img, prelude::*, px, rgb, size,
 };
 use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
@@ -19,6 +20,8 @@ use gpui_ce_elements::editable_text::{
 };
 use gpui_ce_platform::application;
 use gpui_tray::{Icon, Tray};
+use image::{Frame, Rgba, RgbaImage};
+use tapprint_core::raster::MonoRaster;
 
 use crate::model::{Link, Paper, PrinterSetup, ServerOutcome, Shared, Snapshot, Tone, Transport};
 use crate::print;
@@ -339,7 +342,11 @@ fn open_drawer(_: &OpenDrawer, cx: &mut App) {
 
 /// Run a printer job off the main thread. The caller refreshes the window,
 /// because a view cannot be updated from inside its own listener.
-fn run_job(cx: &mut App, busy: &str, job: fn(&Shared) -> Result<(), String>) {
+fn run_job(
+    cx: &mut App,
+    busy: &str,
+    job: impl FnOnce(&Shared) -> Result<(), String> + Send + 'static,
+) {
     let Some(global) = cx.try_global::<AppGlobal>() else {
         return;
     };
@@ -362,6 +369,16 @@ fn run_job(cx: &mut App, busy: &str, job: fn(&Shared) -> Result<(), String>) {
         });
     })
     .detach();
+}
+
+/// Linux opens the file picker through the desktop portal, which some
+/// minimal desktops leave out. Say what is missing instead of doing nothing.
+fn picker_failed(error: &str) -> String {
+    if cfg!(target_os = "linux") {
+        format!("Could not open the file picker. Install xdg-desktop-portal. ({error})")
+    } else {
+        format!("Could not open the file picker: {error}")
+    }
 }
 
 fn can_run_manual_job(snapshot: &Snapshot) -> bool {
@@ -554,7 +571,50 @@ struct TillView {
     connecting: bool,
     /// The first click on Disconnect only asks.
     confirm_disconnect: bool,
+    /// A file opened in the window, shown as it will print.
+    preview: Option<Preview>,
+    /// The picked file is being decoded.
+    loading_file: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A local file fitted to the paper, kept so Print sends exactly what is shown.
+struct Preview {
+    name: String,
+    paper: Paper,
+    pages: Arc<Vec<MonoRaster>>,
+    images: Vec<Arc<RenderImage>>,
+}
+
+impl Preview {
+    fn new(name: String, paper: Paper, pages: Vec<MonoRaster>) -> Self {
+        let images = pages
+            .iter()
+            .map(|page| Arc::new(RenderImage::new(vec![Frame::new(raster_pixels(page))])))
+            .collect();
+        Self {
+            name,
+            paper,
+            pages: Arc::new(pages),
+            images,
+        }
+    }
+}
+
+/// The 1-bit raster as black and white pixels, so the preview shows the dots
+/// the head will burn, dithering included. Black and white read the same in
+/// RGBA and in the BGRA order gpui draws.
+fn raster_pixels(raster: &MonoRaster) -> RgbaImage {
+    let width = u32::from(raster.width_bytes) * 8;
+    let stride = usize::from(raster.width_bytes);
+    RgbaImage::from_fn(width, raster.height, |x, y| {
+        let byte = raster.packed[y as usize * stride + x as usize / 8];
+        if byte & (0x80 >> (x % 8)) == 0 {
+            Rgba([255, 255, 255, 255])
+        } else {
+            Rgba([0, 0, 0, 255])
+        }
+    })
 }
 
 impl TillView {
@@ -594,6 +654,8 @@ impl TillView {
             station_code,
             connecting: false,
             confirm_disconnect: false,
+            preview: None,
+            loading_file: false,
             _subscriptions: subscriptions,
         }
     }
@@ -674,6 +736,162 @@ impl TillView {
     fn job(&mut self, busy: &str, job: fn(&Shared) -> Result<(), String>, cx: &mut Context<Self>) {
         run_job(cx, busy, job);
         self.pull(cx);
+    }
+
+    /// Pick a PNG, JPEG or PDF and show what will print. Only the person at the
+    /// till can start this; pages and the print server cannot.
+    fn open_file(&mut self, cx: &mut Context<Self>) {
+        if self.loading_file {
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        // Set before the picker opens, so a second click cannot open another.
+        self.loading_file = true;
+        let paper = self.snapshot.paper;
+        cx.spawn(async move |this, cx| {
+            let path = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                // Cancelled, or the window closed while the picker was open.
+                Ok(Ok(None)) | Err(_) => None,
+                Ok(Err(error)) => {
+                    let _ = this.update(cx, |view, cx| {
+                        view.loading_file = false;
+                        view.shared
+                            .set_status(Tone::Problem, picker_failed(&error.to_string()));
+                        view.pull(cx);
+                    });
+                    return;
+                }
+            };
+            let Some(path) = path else {
+                let _ = this.update(cx, |view, cx| {
+                    view.loading_file = false;
+                    cx.notify();
+                });
+                return;
+            };
+            let loaded = cx
+                .background_executor()
+                .spawn(async move {
+                    let name = path.file_name().map_or_else(
+                        || "the file".to_string(),
+                        |name| name.to_string_lossy().into_owned(),
+                    );
+                    print::load_file(&path, paper)
+                        .map(|pages| Preview::new(name.clone(), paper, pages))
+                        .map_err(|error| format!("Could not open {name}: {error}"))
+                })
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.loading_file = false;
+                match loaded {
+                    Ok(preview) => view.preview = Some(preview),
+                    Err(message) => view.shared.set_status(Tone::Problem, message),
+                }
+                view.pull(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn print_preview(&mut self, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else {
+            return;
+        };
+        let pages = Arc::clone(&preview.pages);
+        let paper = preview.paper;
+        run_job(cx, "Printing the file", move |shared| {
+            print::print_loaded(shared, &pages, paper)
+        });
+        self.pull(cx);
+    }
+
+    fn preview_card(
+        &self,
+        cx: &mut Context<Self>,
+        preview: &Preview,
+        can_print: bool,
+    ) -> gpui::Div {
+        // 8 dots per millimetre on these heads.
+        let length_cm = preview
+            .pages
+            .iter()
+            .map(|page| page.height)
+            .sum::<u32>()
+            .div_ceil(80);
+        // Fitted to the roll loaded when it opened. Say so before the click,
+        // instead of failing after it.
+        let paper_changed = preview.paper != self.snapshot.paper;
+        let can_print = can_print && !paper_changed;
+        let summary = match preview.pages.len() {
+            1 => format!("about {length_cm} cm"),
+            count => format!("{count} slips, about {length_cm} cm"),
+        };
+        // Half a logical pixel per dot: 256 px across for 80 mm paper.
+        let pages = preview
+            .pages
+            .iter()
+            .zip(&preview.images)
+            .map(|(page, image)| {
+                img(ImageSource::Render(Arc::clone(image)))
+                    .w(px(f32::from(page.width_bytes) * 4.))
+                    .h(px(page.height as f32 / 2.))
+                    .border_1()
+                    .border_color(rgb(SOFT))
+            });
+        card()
+            .child(
+                row()
+                    .child(div().text_sm().truncate().child(preview.name.clone()))
+                    .child(hint(summary)),
+            )
+            .when(paper_changed, |card| {
+                card.child(hint("The paper size changed. Open the file again."))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_2()
+                    .children(pages),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        button(
+                            "print-preview",
+                            "Print",
+                            if can_print {
+                                Kind::Primary
+                            } else {
+                                Kind::Disabled
+                            },
+                            cx.listener(|view, _: &ClickEvent, _, cx| view.print_preview(cx)),
+                        )
+                        .flex_1(),
+                    )
+                    .child(
+                        button(
+                            "close-preview",
+                            "Close",
+                            Kind::Plain,
+                            cx.listener(|view, _: &ClickEvent, _, cx| {
+                                view.preview = None;
+                                cx.notify();
+                            }),
+                        )
+                        .flex_1(),
+                    ),
+            )
     }
 
     fn on_connect(&mut self, _: &ConnectStation, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1307,10 +1525,31 @@ impl TillView {
                 )
             });
 
+        let open_file = button(
+            "open-file",
+            if self.loading_file {
+                "Opening…"
+            } else {
+                "Open a file…"
+            },
+            if self.loading_file {
+                Kind::Disabled
+            } else {
+                Kind::Plain
+            },
+            cx.listener(|view, _: &ClickEvent, _, cx| view.open_file(cx)),
+        );
+        let preview = self
+            .preview
+            .as_ref()
+            .map(|preview| self.preview_card(cx, preview, can_print));
+
         page()
             .child(connection)
             .child(options)
             .child(actions)
+            .child(open_file)
+            .children(preview)
             .children(
                 snapshot
                     .last_job
@@ -2239,4 +2478,26 @@ fn toggle(
                 .when(on, |track| track.justify_end())
                 .child(div().w(px(18.)).h(px(18.)).rounded_full().bg(rgb(CARD))),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The preview must show the dots the head burns. Bit 7 is the leftmost
+    // dot, so a mirrored or shifted preview would hide a cut-off edge.
+    #[test]
+    fn preview_shows_the_printed_dots() {
+        let raster = MonoRaster {
+            width_bytes: 1,
+            height: 2,
+            packed: vec![0b1000_0001, 0b0000_0000],
+        };
+        let pixels = raster_pixels(&raster);
+        assert_eq!(pixels.dimensions(), (8, 2));
+        assert_eq!(pixels.get_pixel(0, 0), &Rgba([0, 0, 0, 255]));
+        assert_eq!(pixels.get_pixel(7, 0), &Rgba([0, 0, 0, 255]));
+        assert_eq!(pixels.get_pixel(1, 0), &Rgba([255, 255, 255, 255]));
+        assert_eq!(pixels.get_pixel(0, 1), &Rgba([255, 255, 255, 255]));
+    }
 }

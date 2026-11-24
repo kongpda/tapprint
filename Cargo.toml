@@ -21,6 +21,8 @@ gpui_ce_elements = "0.3"
 gpui_ce_platform = "0.3"
 # The printing itself: image to dots, ESC/POS, USB and network sending.
 tapprint-core = { path = "crates/tapprint-core", version = "0.1.0-rc.7" }
+# Draws the preview of an opened file. gpui already builds it, so it adds no code.
+image = { version = "0.25", default-features = false }
 # Verifies the signature on an update before it is installed.
 minisign-verify = "0.3"
 serde = { version = "1", features = ["derive"] }
