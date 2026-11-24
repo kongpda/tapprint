@@ -36,6 +36,10 @@ Before going live, read [Going live on a real website](docs/deploying.md): the p
 
 Safari needs one extra step: in TapPrint, open **Settings** and click **Set up** beside **Safari**.
 
+## Print a file
+
+On the **Printer** tab, click **Open a file…** and pick a PNG, JPEG or PDF. TapPrint shows exactly what will print, fitted to the paper; click **Print**. Each PDF page prints as its own slip. Only you can do this in the window: web pages and the print server still send only PNG.
+
 ## Print from a server
 
 One computer with the printer can print for a whole team. TapPrint asks a print server for jobs, so people can print from any phone or laptop.

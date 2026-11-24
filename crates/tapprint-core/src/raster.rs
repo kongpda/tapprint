@@ -2,6 +2,7 @@
 //! thermal head can burn.
 
 use std::io::Cursor;
+use std::time::{Duration, Instant};
 
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{LoadPdfError, Pdf};
@@ -57,6 +58,14 @@ pub fn png_to_raster(
 /// A PDF with more pages than this is refused. Each page is a slip of its own.
 const MAX_PDF_PAGES: usize = 50;
 
+/// All slips of one opened file together, about 5 m at 8 dots per mm. It also
+/// bounds the preview, which holds every page as colour pixels.
+const MAX_FILE_DOTS: u32 = 40_000;
+
+/// Drawing stops after a page that ends past this. A page already being
+/// drawn is not cut short, so this bounds a slow PDF, not a single page.
+const PDF_TIME_BUDGET: Duration = Duration::from_secs(30);
+
 /// Decode a PNG, JPEG or PDF the person at the till opened in the window, and
 /// fit each page to the head width. An image is one page.
 ///
@@ -78,8 +87,12 @@ pub fn file_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRast
     )?])
 }
 
-/// PDF readers accept the header anywhere in the first 1 024 bytes.
+/// PDF readers accept the header anywhere in the first 1 024 bytes. A PNG or
+/// JPEG can hold that text in its metadata, so their signatures win.
 fn is_pdf(bytes: &[u8]) -> bool {
+    if bytes.starts_with(b"\x89PNG") || bytes.starts_with(b"\xFF\xD8\xFF") {
+        return false;
+    }
     bytes
         .get(..1_024)
         .unwrap_or(bytes)
@@ -110,17 +123,27 @@ fn pdf_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRaster>, 
     let cache = RenderCache::new();
     let interpreter = InterpreterSettings::default();
     let render_settings = RenderSettings::default();
+    let started = Instant::now();
+    let mut total = 0f32;
     pages
         .iter()
         .map(|page| {
+            if started.elapsed() > PDF_TIME_BUDGET {
+                return Err(RasterError("the PDF takes too long to draw".to_string()));
+            }
             let (width, height) = page.render_dimensions();
-            if !(width >= 1.0 && height >= 1.0) {
+            if !(width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0) {
                 return Err(RasterError("a PDF page is empty".to_string()));
             }
             let scale = max_width_dots as f32 / width;
             // Refuse before drawing: a very long page would be drawn in full first.
-            if height * scale > MAX_HEIGHT as f32 {
+            let scaled = height * scale;
+            if scaled > MAX_HEIGHT as f32 {
                 return Err(RasterError("a PDF page is too long for a slip".to_string()));
+            }
+            total += scaled;
+            if total > MAX_FILE_DOTS as f32 {
+                return Err(RasterError(too_long_message()));
             }
             let pixmap = render(
                 page,
@@ -143,6 +166,10 @@ fn pdf_to_rasters(bytes: &[u8], max_width_dots: u32) -> Result<Vec<MonoRaster>, 
             finish(DynamicImage::ImageRgba8(rgba), max_width_dots, false)
         })
         .collect()
+}
+
+fn too_long_message() -> String {
+    "the file would print over 5 m of paper".to_string()
 }
 
 fn check_width(max_width_dots: u32) -> Result<(), RasterError> {
@@ -674,5 +701,14 @@ mod tests {
     fn a_broken_pdf_is_refused() {
         let error = file_to_rasters(b"%PDF-1.7 truncated", 8).unwrap_err();
         assert_eq!(error.0, "the PDF could not be read");
+    }
+
+    // Metadata can hold "%PDF-": the image's own signature must decide.
+    #[test]
+    fn a_png_mentioning_pdf_is_still_a_png() {
+        let mut png = png_row(&[0; 8]);
+        png.extend_from_slice(b"%PDF-1.7");
+        assert!(!is_pdf(&png));
+        assert!(is_pdf(b"\n%PDF-1.7"));
     }
 }

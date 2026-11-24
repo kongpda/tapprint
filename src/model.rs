@@ -402,6 +402,12 @@ impl Shared {
         Ok(Self::from_parts(config, path, notice))
     }
 
+    /// Default settings, saved nowhere, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self::from_parts(FileConfig::default(), PathBuf::new(), None)
+    }
+
     fn from_parts(config: FileConfig, path: PathBuf, notice: Option<String>) -> Self {
         let (tone, status) = match notice {
             Some(message) => (Tone::Problem, message),

@@ -750,6 +750,8 @@ impl TillView {
             multiple: false,
             prompt: Some("Open".into()),
         });
+        // Set before the picker opens, so a second click cannot open another.
+        self.loading_file = true;
         let paper = self.snapshot.paper;
         cx.spawn(async move |this, cx| {
             let path = match picked.await {
@@ -758,6 +760,7 @@ impl TillView {
                 Ok(Ok(None)) | Err(_) => None,
                 Ok(Err(error)) => {
                     let _ = this.update(cx, |view, cx| {
+                        view.loading_file = false;
                         view.shared
                             .set_status(Tone::Problem, picker_failed(&error.to_string()));
                         view.pull(cx);
@@ -766,12 +769,12 @@ impl TillView {
                 }
             };
             let Some(path) = path else {
+                let _ = this.update(cx, |view, cx| {
+                    view.loading_file = false;
+                    cx.notify();
+                });
                 return;
             };
-            let _ = this.update(cx, |view, cx| {
-                view.loading_file = true;
-                cx.notify();
-            });
             let loaded = cx
                 .background_executor()
                 .spawn(async move {
@@ -822,6 +825,10 @@ impl TillView {
             .map(|page| page.height)
             .sum::<u32>()
             .div_ceil(80);
+        // Fitted to the roll loaded when it opened. Say so before the click,
+        // instead of failing after it.
+        let paper_changed = preview.paper != self.snapshot.paper;
+        let can_print = can_print && !paper_changed;
         let summary = match preview.pages.len() {
             1 => format!("about {length_cm} cm"),
             count => format!("{count} slips, about {length_cm} cm"),
@@ -844,6 +851,9 @@ impl TillView {
                     .child(div().text_sm().truncate().child(preview.name.clone()))
                     .child(hint(summary)),
             )
+            .when(paper_changed, |card| {
+                card.child(hint("The paper size changed. Open the file again."))
+            })
             .child(
                 div()
                     .flex()
