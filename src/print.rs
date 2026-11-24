@@ -4,6 +4,9 @@
 //! The address comes from the window, so a stolen pairing code can print, and
 //! cannot scan the network.
 
+use std::fs;
+use std::path::Path;
+
 use tapprint_core::net::write_tcp;
 pub use tapprint_core::net::{RAW_PORT, find_network_printers, local_ipv4};
 
@@ -64,6 +67,37 @@ pub fn print_png(shared: &Shared, png: &[u8], options: Options) -> Result<(), Jo
             Err(JobError::new(Fault::BadInput, error.0))
         }
     }
+}
+
+/// A local file over this is refused before it is read. A 48 MP phone JPEG is
+/// about 20 MB.
+const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Decode a PNG or JPEG the person at the till picked in the window, for the
+/// preview. Pages and the print server never reach this: they send PNG
+/// through `print_png`.
+pub fn load_file(path: &Path, paper: Paper) -> Result<MonoRaster, String> {
+    let bytes = read_file(path)?;
+    raster::file_to_raster(&bytes, paper.dots()).map_err(|error| error.0)
+}
+
+/// Print the previewed file. It was fitted to `paper`, so a roll changed in
+/// the meantime would print it the wrong width.
+pub fn print_loaded(shared: &Shared, raster: &MonoRaster, paper: Paper) -> Result<(), String> {
+    if shared.snapshot().paper != paper {
+        let message = "The paper size changed. Open the file again.";
+        shared.set_status(Tone::Problem, message);
+        return Err(message.to_string());
+    }
+    print_raster(shared, raster, true, false).map_err(|error| error.message)
+}
+
+fn read_file(path: &Path) -> Result<Vec<u8>, String> {
+    let size = fs::metadata(path).map_err(|error| error.to_string())?.len();
+    if size > MAX_FILE_BYTES {
+        return Err("the file is over 50 MB".to_string());
+    }
+    fs::read(path).map_err(|error| error.to_string())
 }
 
 /// Bytes from the page, sent unchanged. The caller checks that the cashier allowed it.

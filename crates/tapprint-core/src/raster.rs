@@ -3,7 +3,9 @@
 use std::io::Cursor;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, GrayImage, ImageError, ImageFormat, ImageReader, Limits, Luma};
+use image::{
+    DynamicImage, GrayImage, ImageDecoder as _, ImageError, ImageFormat, ImageReader, Limits, Luma,
+};
 
 /// Dots across the TM-T88V head. 80 mm paper is 512 dots; 58 mm paper is 360.
 pub const DOTS_80MM: u32 = 512;
@@ -41,10 +43,36 @@ pub fn png_to_raster(
     max_width_dots: u32,
     dither: bool,
 ) -> Result<MonoRaster, RasterError> {
+    check_width(max_width_dots)?;
+    finish(decode_png(png)?, max_width_dots, dither)
+}
+
+/// Decode a PNG or JPEG file the person at the till opened in the window, and
+/// fit it to the head width.
+///
+/// Only for files picked by hand. Pages and the print server send PNG through
+/// [`png_to_raster`], so this wider decoder never sees their bytes.
+///
+/// A JPEG is almost always a photo, so it is dithered. A PNG is usually a
+/// screenshot or a document, so it keeps the plain cut-off for sharp text.
+pub fn file_to_raster(bytes: &[u8], max_width_dots: u32) -> Result<MonoRaster, RasterError> {
+    check_width(max_width_dots)?;
+    let (image, format) = decode_file(bytes)?;
+    finish(image, max_width_dots, format == ImageFormat::Jpeg)
+}
+
+fn check_width(max_width_dots: u32) -> Result<(), RasterError> {
     if max_width_dots == 0 || max_width_dots > 2_048 {
         return Err(RasterError("paper width is not usable".to_string()));
     }
-    let image = decode_png(png)?;
+    Ok(())
+}
+
+fn finish(
+    image: DynamicImage,
+    max_width_dots: u32,
+    dither: bool,
+) -> Result<MonoRaster, RasterError> {
     let mut gray = fit_width(image, max_width_dots)?;
     if dither {
         floyd_steinberg(&mut gray);
@@ -104,6 +132,33 @@ fn decode_png(png: &[u8]) -> Result<DynamicImage, RasterError> {
     reader.set_format(ImageFormat::Png);
     reader.limits(limits);
     Ok(reader.decode()?)
+}
+
+/// A phone photo is about 4 000 x 3 000, and 48 MP cameras reach 8 064 x 6 048,
+/// about 150 MB decoded. A local file is not bounded by the 1.5 MB body cap.
+fn decode_file(bytes: &[u8]) -> Result<(DynamicImage, ImageFormat), RasterError> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| RasterError(error.to_string()))?;
+    let format = match reader.format() {
+        Some(format @ (ImageFormat::Png | ImageFormat::Jpeg)) => format,
+        _ => {
+            return Err(RasterError(
+                "only PNG and JPEG files can be printed".to_string(),
+            ));
+        }
+    };
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(10_000);
+    limits.max_image_height = Some(16_000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder()?;
+    // Phones store a portrait photo sideways and say so in its EXIF tag.
+    let orientation = decoder.orientation()?;
+    let mut image = DynamicImage::from_decoder(decoder)?;
+    image.apply_orientation(orientation);
+    Ok((image, format))
 }
 
 /// Grey on white paper. A canvas export is transparent where nothing was
@@ -432,5 +487,52 @@ mod tests {
             .unwrap();
         let error = png_to_raster(&png.into_inner(), 512, false).unwrap_err();
         assert!(error.0.contains("too tall"));
+    }
+
+    fn jpeg_square(shade: u8) -> Vec<u8> {
+        let image = GrayImage::from_pixel(16, 16, Luma([shade]));
+        let mut jpeg = Cursor::new(Vec::new());
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(image.as_raw(), 16, 16, ExtendedColorType::L8)
+            .unwrap();
+        jpeg.into_inner()
+    }
+
+    // Pages and the print server must stay PNG-only: JPEG decoding is only
+    // for files the person at the till picked, so it must not leak into the
+    // decoder that reads bytes from the network.
+    #[test]
+    fn pages_cannot_send_a_jpeg() {
+        let error = png_to_raster(&jpeg_square(0), 16, false).unwrap_err();
+        assert!(!error.0.is_empty());
+    }
+
+    #[test]
+    fn an_opened_jpeg_prints() {
+        let raster = file_to_raster(&jpeg_square(0), 16).unwrap();
+        assert_eq!(raster.width_bytes, 2);
+        assert_eq!(raster.height, 16);
+        assert!(raster.packed.iter().all(|byte| *byte == 0xFF));
+    }
+
+    // A grey photo must come out as a dot pattern, not a solid black block.
+    #[test]
+    fn an_opened_jpeg_is_dithered() {
+        let raster = file_to_raster(&jpeg_square(128), 16).unwrap();
+        assert!(raster.packed.iter().any(|byte| *byte != 0xFF));
+        assert!(raster.packed.iter().any(|byte| *byte != 0x00));
+    }
+
+    // A screenshot keeps the plain cut-off, so grey text burns solid.
+    #[test]
+    fn an_opened_png_is_not_dithered() {
+        let raster = file_to_raster(&png_row(&[128; 8]), 8).unwrap();
+        assert_eq!(raster.packed, vec![0xFF]);
+    }
+
+    #[test]
+    fn an_opened_file_of_another_kind_is_refused() {
+        let error = file_to_raster(b"%PDF-1.7 not an image", 8).unwrap_err();
+        assert_eq!(error.0, "only PNG and JPEG files can be printed");
     }
 }
