@@ -453,17 +453,18 @@ fn step(
             let Some(job) = next.job else {
                 return poll;
             };
-            let reported = match serde_json::from_value::<Job>(job.clone()) {
+            let ran = match serde_json::from_value::<Job>(job.clone()) {
                 Ok(job) => run_job(shared, client, &token, &job),
-                Err(_) => unreadable_job(shared, client, &token, &job),
+                Err(_) if unreadable_job(shared, client, &token, &job) => Ran::Done,
+                Err(_) => Ran::Held,
             };
-            if reported {
+            match ran {
                 // There may be more waiting: look again straight away.
-                Duration::from_millis(200)
-            } else {
-                // The server still holds this job. Asking again at once
-                // would only fetch it again, several times a second.
-                poll
+                Ran::Done => Duration::from_millis(200),
+                // The server still holds this job, or offers it again until
+                // the printer is fixed. Asking again at once would only
+                // fetch it again, several times a second.
+                Ran::Held | Ran::Retry => poll,
             }
         }
         other => settle(shared, client, &token, other, failures),
@@ -541,12 +542,21 @@ fn unreadable_job(shared: &Shared, client: &Client, token: &str, job: &serde_jso
     true
 }
 
+/// How a job ended, which sets how soon to look for the next one.
+enum Ran {
+    /// Reported as finished: the queue has moved on.
+    Done,
+    /// Reported for another try: the printer or the download failed.
+    Retry,
+    /// Not reported: the server still holds the job.
+    Held,
+}
+
 /// Print one job's slips, from where an earlier try stopped, and report.
-/// Returns whether the job was reported, so the queue has moved on.
-fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
+fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> Ran {
     if !valid_id(&job.id) {
         // Never put an odd id in a URL. The server's hold on it lapses.
-        return false;
+        return Ran::Held;
     }
     let summary = match clean(&job.summary, 80) {
         text if text.is_empty() => "Print job".to_string(),
@@ -568,7 +578,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
             Some("TapPrint could not read this job"),
         );
         shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-        return true;
+        return Ran::Done;
     }
     let paper = job
         .paper_mm
@@ -587,7 +597,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
             Reply::Ok(png) => png,
             Reply::Unauthorized => {
                 shared.disconnect_server(client.endpoint(), token, REMOVED, true);
-                return false;
+                return Ran::Held;
             }
             Reply::Down(message) => {
                 // Nothing of this slip printed. If the report cannot get
@@ -602,12 +612,25 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
                     Some(&format!("Could not download the slip: {message}")),
                 );
                 shared.note_server_job(&summary, &sender, ServerOutcome::Retrying);
-                return true;
+                return Ran::Retry;
             }
             Reply::Disabled | Reply::Refused(_) => {
-                // The job was cancelled or taken back. Stop here.
+                // The job was cancelled or taken back. Stop here, but say
+                // which slips already printed, so none is offered again.
                 shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-                return false;
+                if printed > job.first_slip {
+                    report(
+                        shared,
+                        client,
+                        token,
+                        &job.id,
+                        "printer_error",
+                        printed,
+                        Some("The server refused the next slip"),
+                    );
+                    return Ran::Done;
+                }
+                return Ran::Held;
             }
         };
         if !png.starts_with(PNG_SIGNATURE) {
@@ -621,7 +644,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
                 Some("The server sent something that is not a picture"),
             );
             shared.note_server_job(&summary, &sender, ServerOutcome::Failed);
-            return true;
+            return Ran::Done;
         }
         if let Err(error) = print::print_png(shared, &png, options) {
             let (outcome, shown) = outcome_for(&error);
@@ -635,7 +658,10 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
                 Some(&error.message),
             );
             shared.note_server_job(&summary, &sender, shown);
-            return true;
+            return match shown {
+                ServerOutcome::Retrying => Ran::Retry,
+                _ => Ran::Done,
+            };
         }
         printed += 1;
     }
@@ -647,7 +673,7 @@ fn run_job(shared: &Shared, client: &Client, token: &str, job: &Job) -> bool {
         format!(" from {sender}")
     };
     shared.set_status(Tone::Ready, format!("Printed {summary}{from}"));
-    true
+    Ran::Done
 }
 
 /// Tell the server what happened. Tried three times: a lost "printed"

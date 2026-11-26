@@ -58,7 +58,16 @@ pub fn open_drawer(shared: &Shared) -> Result<(), String> {
 }
 
 pub fn print_png(shared: &Shared, png: &[u8], options: Options) -> Result<(), JobError> {
-    match raster::png_to_raster(png, options.paper.dots(), options.dither) {
+    // A decoder bug must not end the print-server thread, which has no
+    // handler above it.
+    let decoded =
+        panic::catch_unwind(|| raster::png_to_raster(png, options.paper.dots(), options.dither))
+            .unwrap_or_else(|_| {
+                Err(raster::RasterError(
+                    "TapPrint could not draw this image".into(),
+                ))
+            });
+    match decoded {
         Ok(raster) => print_raster(shared, &raster, options.cut, options.drawer),
         Err(error) => {
             // The page sent something unusable. Say so in the window too.

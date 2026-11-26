@@ -28,7 +28,7 @@ TapPrint accepts both, and treats them differently:
 | `http://localhost` or `http://127.0.0.1` | Works. It is for development, and browsers treat it as secure. |
 | any other `http://…`, such as `http://192.168.1.10` | Chrome and Edge block it. In Firefox it can pair, and the TapPrint prompt warns that the site is not secure. |
 
-On plain http, someone on the same network can change the page before it reaches the till, and the changed page can print. If every till page you use is on https, turn on **Only secure websites** in TapPrint's Settings tab. An http site then gets `403` `insecure_origin` when it asks to pair, and a code it already holds stops working until the switch is turned off.
+On plain http, someone on the same network can change the page before it reaches the till, and the changed page can print. **Only secure websites** in TapPrint's Settings tab is on for new installs. Keep it on when every till page you use is on https. An http site then gets `403` `insecure_origin` when it asks to pair, and a code it already holds stops working until the switch is turned off.
 
 ## What each till needs
 

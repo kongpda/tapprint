@@ -204,6 +204,23 @@ fn status_reply(bytes: &[u8]) -> Option<u8> {
     }
 }
 
+/// Does this start like an HTTP request? A web page can send one to any
+/// port, and an ESC/POS printer would act on the commands in its body.
+fn from_a_browser(bytes: &[u8]) -> bool {
+    const METHODS: [&[u8]; 9] = [
+        b"GET ",
+        b"POST ",
+        b"PUT ",
+        b"HEAD ",
+        b"OPTIONS ",
+        b"DELETE ",
+        b"PATCH ",
+        b"CONNECT ",
+        b"TRACE ",
+    ];
+    METHODS.iter().any(|method| bytes.starts_with(method))
+}
+
 /// Read jobs from one connection. A job ends when the app closes the
 /// connection, or goes quiet for `JOB_GAP`.
 fn receive(
@@ -223,11 +240,15 @@ fn receive(
             Ok(0) => break,
             Ok(read) => {
                 last = Instant::now();
-                if job.is_empty()
-                    && let Some(reply) = status_reply(&chunk[..read])
-                {
+                // Asked between jobs or right after one, before the gap ends.
+                if let Some(reply) = status_reply(&chunk[..read]) {
                     socket.write_all(&[reply])?;
                     continue;
+                }
+                if job.is_empty() && from_a_browser(&chunk[..read]) {
+                    // A web page reaching this port. Only pages the cashier
+                    // allowed may print, through the local API.
+                    return Ok(());
                 }
                 job.extend_from_slice(&chunk[..read]);
                 if job.len() > LARGEST_JOB {
@@ -287,6 +308,40 @@ mod tests {
     }
 
     const WAIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn a_web_page_cannot_print_through_the_shared_printer() {
+        // A page's fetch() carries ESC/POS in its body. Pairing is the only
+        // way a page may print, so the request is dropped whole.
+        let (port, jobs, stop) = listening();
+        let mut page = connect(port);
+        page.write_all(b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n\x1bp\x00\x19\xfa")
+            .unwrap();
+        drop(page);
+        assert!(jobs.recv_timeout(Duration::from_secs(3)).is_err());
+        stop.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn a_status_query_right_after_a_job_is_answered() {
+        // Apps print, then ask "ready?" before the job gap ends. Without an
+        // answer they wait for ever, and the query would print as data.
+        let (port, jobs, stop) = listening();
+        let mut app = connect(port);
+        // Let the listener (which looks every TICK) take the connection, so
+        // the job and the query arrive as two reads, as they do from an app.
+        thread::sleep(TICK * 2);
+        app.write_all(b"\x1b@Hello\n").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        app.write_all(&[0x10, 0x04, 1]).unwrap();
+        let mut reply = [0u8; 1];
+        app.set_read_timeout(Some(WAIT)).unwrap();
+        app.read_exact(&mut reply).unwrap();
+        assert_eq!(reply, [0x16]);
+        drop(app);
+        assert_eq!(jobs.recv_timeout(WAIT).unwrap(), b"\x1b@Hello\n");
+        stop.store(true, Ordering::Release);
+    }
 
     #[test]
     fn a_job_is_what_the_app_sent_before_it_closed() {

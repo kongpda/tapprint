@@ -12,7 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
@@ -251,6 +251,25 @@ fn pair_failure(error: &PairError) -> (u16, String, &'static str) {
     }
 }
 
+/// A receipt arrives in well under a second. A body sent a byte at a time
+/// would hold a print slot, and six of them would turn every till away.
+const BODY_TIME: Duration = Duration::from_secs(20);
+
+/// Stops reading once `until` has passed.
+struct Deadline<R> {
+    reader: R,
+    until: Instant,
+}
+
+impl<R: Read> Read for Deadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if Instant::now() > self.until {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.reader.read(buf)
+    }
+}
+
 fn print(shared: &Shared, request: &mut Request) -> (StatusCode, Vec<u8>) {
     let code = bearer(request).unwrap_or_default();
     if !shared.authorize(header(request, "origin").as_deref(), &code) {
@@ -303,11 +322,13 @@ fn print(shared: &Shared, request: &mut Request) -> (StatusCode, Vec<u8>) {
         );
     };
     let mut body = Vec::new();
-    if request
-        .as_reader()
-        .take(u64::try_from(MAX_BODY.saturating_add(1)).unwrap_or(u64::MAX))
-        .read_to_end(&mut body)
-        .is_err()
+    if (Deadline {
+        reader: request.as_reader(),
+        until: Instant::now() + BODY_TIME,
+    })
+    .take(u64::try_from(MAX_BODY.saturating_add(1)).unwrap_or(u64::MAX))
+    .read_to_end(&mut body)
+    .is_err()
     {
         return (
             StatusCode(400),

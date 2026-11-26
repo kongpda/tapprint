@@ -117,7 +117,9 @@ struct FileConfig {
     drawer_pin: u8,
     drawer_on_ms: u16,
     drawer_off_ms: u16,
-    /// Refuse websites on plain http, except pages on this computer.
+    /// Refuse websites on plain http, except pages on this computer. On for
+    /// new installs. A file saved before that keeps it off.
+    #[serde(default = "https_only_for_old_files")]
     https_only: bool,
     /// Ask GitHub once a day whether a newer TapPrint exists.
     check_updates: bool,
@@ -143,6 +145,10 @@ struct FileConfig {
 
 fn drawer_enabled_for_old_files() -> bool {
     true
+}
+
+fn https_only_for_old_files() -> bool {
+    false
 }
 
 impl FileConfig {
@@ -178,7 +184,7 @@ impl Default for FileConfig {
             drawer_pin: 2,
             drawer_on_ms: 50,
             drawer_off_ms: 50,
-            https_only: false,
+            https_only: true,
             check_updates: true,
             share_on: false,
             share_port: SHARE_PORT,
@@ -1574,6 +1580,15 @@ mod tests {
         assert!(!FileConfig::default().drawer_enabled);
     }
 
+    // A shop already printing from an http page must not be locked out by an
+    // upgrade. Only a fresh install starts refusing plain http.
+    #[test]
+    fn plain_http_sites_keep_working_for_old_files_and_are_refused_on_new_ones() {
+        let old: FileConfig = serde_json::from_str(r#"{"paper_mm":80}"#).unwrap();
+        assert!(!old.https_only);
+        assert!(FileConfig::default().https_only);
+    }
+
     #[test]
     fn clearing_till_pages_empties_the_list() {
         let shared = Shared::from_parts(FileConfig::default(), PathBuf::new(), None);
@@ -2001,6 +2016,8 @@ mod tests {
                 panic!("no pairing request showed up");
             })
         };
+        // New installs refuse http. Start from a till that allows it.
+        shared.set_https_only(false);
         let code = shared
             .request_pair("http://192.168.1.10", "x", Duration::from_secs(5))
             .unwrap();

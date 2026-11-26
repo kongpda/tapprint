@@ -101,7 +101,8 @@ pub fn write_tcp(host: &str, port: u16, bytes: &[u8], check_paper: bool) -> Resu
         .map_err(|error| fail(error.to_string()))?;
     let key = format!("{host}:{port}");
     if check_paper && !is_silent(&key) {
-        match tcp_paper_out(&mut stream) {
+        // A connection that breaks on the question has taken none of the job.
+        match tcp_paper_out(&mut stream).map_err(|error| fail(format!("{key}: {error}")))? {
             Some(true) => return Err(JobError::new(Fault::PaperOut, escpos::PAPER_OUT)),
             Some(false) => note_answer(&key, true),
             None => note_answer(&key, false),
@@ -190,14 +191,14 @@ fn note_answer(key: &str, answered: bool) {
 
 /// Ask the printer for its paper sensor and wait half a second. `None`
 /// when it gives no status reply, so the job is printed as before.
-fn tcp_paper_out(stream: &mut TcpStream) -> Option<bool> {
-    stream.write_all(&escpos::PAPER_STATUS).ok()?;
+fn tcp_paper_out(stream: &mut TcpStream) -> std::io::Result<Option<bool>> {
+    stream.write_all(&escpos::PAPER_STATUS)?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let mut reply = [0u8; 1];
-    match stream.read(&mut reply) {
+    Ok(match stream.read(&mut reply) {
         Ok(1) => escpos::roll_paper_out(reply[0]),
         _ => None,
-    }
+    })
 }
 
 #[cfg(test)]
