@@ -5,7 +5,11 @@
 //! - Windows: the `Run` key under `HKEY_CURRENT_USER`.
 //! - Linux: an XDG autostart entry in `~/.config/autostart`.
 //!
-//! All three are per-user and need no administrator rights.
+//! All three are per-user and need no administrator rights. Each starts the app
+//! with `--hidden`, so a login shows the menu-bar icon and no window.
+
+/// The argument the login item adds. The app skips opening its window for it.
+pub const HIDDEN: &str = "--hidden";
 
 use std::path::{Path, PathBuf};
 
@@ -66,8 +70,13 @@ mod platform {
         // `open` starts the bundle the way Finder does, with its Dock icon and
         // single-copy rule. A bare binary path is the fallback for `cargo run`.
         let arguments = match super::app_bundle(program) {
-            Some(bundle) => vec!["/usr/bin/open".to_string(), bundle.display().to_string()],
-            None => vec![program.display().to_string()],
+            Some(bundle) => vec![
+                "/usr/bin/open".to_string(),
+                bundle.display().to_string(),
+                "--args".to_string(),
+                super::HIDDEN.to_string(),
+            ],
+            None => vec![program.display().to_string(), super::HIDDEN.to_string()],
         };
         let arguments: String = arguments
             .iter()
@@ -138,7 +147,7 @@ mod platform {
 
     pub fn enable(program: &Path) -> Result<(), String> {
         // Quoted, so a path with spaces such as `C:\Program Files` still runs.
-        let command = format!("\"{}\"", program.display());
+        let command = format!("\"{}\" {}", program.display(), super::HIDDEN);
         let data: Vec<u16> = command.encode_utf16().chain([0]).collect();
         let bytes =
             u32::try_from(data.len() * 2).map_err(|_| "app path is too long".to_string())?;
@@ -208,7 +217,8 @@ mod platform {
             exec.push(ch);
         }
         let body = format!(
-            "[Desktop Entry]\nType=Application\nName=TapPrint\nExec=\"{exec}\"\nX-GNOME-Autostart-enabled=true\n"
+            "[Desktop Entry]\nType=Application\nName=TapPrint\nExec=\"{exec}\" {}\nX-GNOME-Autostart-enabled=true\n",
+            super::HIDDEN
         );
         let path = entry_path();
         if let Some(parent) = path.parent() {
