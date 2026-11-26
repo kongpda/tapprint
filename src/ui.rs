@@ -5,13 +5,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use gpui::Focusable as _;
 use gpui::{
-    App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, FontWeight, Global,
-    ImageSource, KeyBinding, Menu, MenuItem, PathPromptOptions, RenderImage, SharedString,
-    Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, actions, div,
-    hsla, img, prelude::*, px, rgb, size,
+    App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
+    FontWeight, Global, ImageSource, KeyBinding, Menu, MenuItem, PathPromptOptions, RenderImage,
+    SharedString, Subscription, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions,
+    actions, div, hsla, img, prelude::*, px, rgb, size,
 };
 use gpui_ce_elements::editable_text::{
     EditableTextState, StringStorage, TextChanged,
@@ -43,7 +44,7 @@ actions!(
 
 const PAPER: u32 = 0xf5f6f8;
 const INK: u32 = 0x17212b;
-const MUTED: u32 = 0x657180;
+const MUTED: u32 = 0x5a6573;
 const CARD: u32 = 0xffffff;
 const SOFT: u32 = 0xe5e9ee;
 const READY_BG: u32 = 0xe8f4ef;
@@ -70,13 +71,13 @@ struct AppGlobal {
 
 impl Global for AppGlobal {}
 
-pub fn run(shared: Arc<Shared>) {
+pub fn run(shared: Arc<Shared>, hidden: bool) {
     let app = application().with_quit_mode(gpui::QuitMode::Explicit);
     // macOS: a Dock click, or opening the app again from Finder, after the
     // window was closed. Without this the click does nothing.
     app.on_reopen(|cx| open_window(&OpenWindow, cx));
     app.run(move |cx| {
-        if let Err(error) = start(cx, shared) {
+        if let Err(error) = start(cx, shared, hidden) {
             crate::notice::fatal(&format!("could not add the menu-bar icon: {error}"));
             // Without a tray or window the app cannot be seen or quit.
             std::process::exit(1);
@@ -84,13 +85,13 @@ pub fn run(shared: Arc<Shared>) {
     });
 }
 
-fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
+fn start(cx: &mut App, shared: Arc<Shared>, hidden: bool) -> gpui_tray::Result<()> {
     cx.bind_keys(default_bindings().as_keybindings(Some(DEFAULT_INPUT_CONTEXT)));
     cx.bind_keys([
         KeyBinding::new("enter", SaveNetwork, Some("TapPrint")),
         KeyBinding::new("enter", ConnectStation, Some("TapPrintStation")),
-        // Esc anywhere in the window turns a waiting site down.
-        KeyBinding::new("escape", DenyPair, None),
+        // Esc turns a waiting site down, only while the pair card has focus.
+        KeyBinding::new("escape", DenyPair, Some("TapPrintPair")),
     ]);
     cx.on_action(open_window)
         .on_action(deny_pair)
@@ -119,8 +120,11 @@ fn start(cx: &mut App, shared: Arc<Shared>) -> gpui_tray::Result<()> {
     // gpui-ce 0.3 on macOS still holds its platform lock while this start
     // callback runs, so opening a window here deadlocks. Open it on the next
     // run-loop turn instead.
-    cx.spawn(async |cx| cx.update(|cx| open_window(&OpenWindow, cx)))
-        .detach();
+    // A login start stays in the menu bar until a site asks or the icon is clicked.
+    if !hidden {
+        cx.spawn(async |cx| cx.update(|cx| open_window(&OpenWindow, cx)))
+            .detach();
+    }
     watch_printers(cx);
     Ok(())
 }
@@ -260,8 +264,8 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
     items.extend([
         MenuItem::action(summary, gpui::NoAction).disabled(true),
         MenuItem::separator(),
-        MenuItem::action("Open", OpenWindow),
-        MenuItem::action("Print a test slip", PrintTest).disabled(!can_print),
+        MenuItem::action("Open TapPrint", OpenWindow),
+        MenuItem::action("Print test slip", PrintTest).disabled(!can_print),
     ]);
     // Same switch as the Printer tab: with it off, the menu hides the drawer too.
     if snapshot
@@ -272,12 +276,22 @@ fn build_menu(cx: &mut App) -> Vec<MenuItem> {
     }
     items.extend([
         MenuItem::separator(),
-        MenuItem::submenu(Menu::new("Printer").items([
-            MenuItem::action("Use USB", UseUsb),
-            MenuItem::action("Use network", UseNetwork),
-        ])),
+        MenuItem::submenu(
+            Menu::new("Printer").items([
+                MenuItem::action("Use USB", UseUsb).checked(
+                    snapshot
+                        .as_ref()
+                        .is_some_and(|s| s.transport == Transport::Usb),
+                ),
+                MenuItem::action("Use network", UseNetwork).checked(
+                    snapshot
+                        .as_ref()
+                        .is_some_and(|s| s.transport == Transport::Tcp),
+                ),
+            ]),
+        ),
         MenuItem::separator(),
-        MenuItem::action("Quit", Quit),
+        MenuItem::action("Quit TapPrint", Quit),
     ]);
     items
 }
@@ -311,7 +325,7 @@ fn open_window(_: &OpenWindow, cx: &mut App) {
             traffic_light_position: None,
         }),
         is_resizable: true,
-        window_min_size: Some(size(px(380.), px(460.))),
+        window_min_size: Some(size(px(380.), px(560.))),
         ..Default::default()
     };
     let opened = cx.open_window(options, |_window, cx| {
@@ -436,9 +450,9 @@ fn quit(_: &Quit, cx: &mut App) {
 
 fn tray_title(tone: Tone, asking: bool) -> &'static str {
     if asking {
-        "Print ?"
+        "Allow?"
     } else if tone == Tone::Problem {
-        "Print !"
+        "Check printer"
     } else {
         ""
     }
@@ -499,11 +513,14 @@ enum Search {
     Done(Vec<String>),
 }
 
+/// How long a test slip or drawer result stays by the buttons.
+const RESULT_SHOWN: Duration = Duration::from_secs(6);
+
 // Help stays out of the way until its (i) is clicked. One note is open at a time.
 const HELP_USB: &str = "Set the printer's USB port to Printer Class. If the system made a print queue for it, remove the queue and plug the printer in again.";
 const HELP_NETWORK: &str = "Find printers looks on this computer's own network. If yours is not found, type its address. The port is almost always 9100.";
-const HELP_DRAWER_ENABLE: &str = "Shows the drawer pin choice and the Open drawer button on the Printer tab. Websites can still open the drawer when this is off.";
-const HELP_DRAWER: &str = "Most drawers use pin 2. If Open drawer does nothing, try pin 5.";
+const HELP_DRAWER_ENABLE: &str = "Shows the drawer pin choice and the Open cash drawer button on the Printer tab. Websites can still open the drawer when this is off.";
+const HELP_DRAWER: &str = "Most drawers use pin 2. If Open cash drawer does nothing, try pin 5.";
 const HELP_SITES: &str =
     "When your till page asks to print, it appears at the top of this window for you to allow.";
 const HELP_RAW: &str = "Lets allowed websites send their own printer commands, which can change printer settings. Leave it off unless your till needs it.";
@@ -530,10 +547,9 @@ fn help_server_pause() -> String {
     )
 }
 
-/// "PRINT FROM KHEVENTS", for the card's heading.
-static SERVER_HEADING: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!("PRINT FROM {}", crate::station::SERVER_NAME.to_uppercase())
-});
+/// "Print from khevents", for the card's heading.
+static SERVER_HEADING: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| format!("Print from {}", crate::station::SERVER_NAME));
 
 static SERVER_TOGGLE: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| format!("Take print jobs from {}", crate::station::SERVER_NAME));
@@ -575,6 +591,13 @@ struct TillView {
     preview: Option<Preview>,
     /// The picked file is being decoded.
     loading_file: bool,
+    /// When a test slip or drawer button was last clicked, to show its result a while.
+    job_clicked: Option<Instant>,
+    /// The pair card takes focus, so Esc reaches it. Set again for each new request.
+    pair_focus: FocusHandle,
+    pair_seen: Option<u64>,
+    /// What had focus at the last render, to outline the focused text field.
+    focused: Option<FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -656,6 +679,10 @@ impl TillView {
             confirm_disconnect: false,
             preview: None,
             loading_file: false,
+            job_clicked: None,
+            pair_focus: cx.focus_handle(),
+            pair_seen: None,
+            focused: None,
             _subscriptions: subscriptions,
         }
     }
@@ -736,6 +763,18 @@ impl TillView {
     fn job(&mut self, busy: &str, job: fn(&Shared) -> Result<(), String>, cx: &mut Context<Self>) {
         run_job(cx, busy, job);
         self.pull(cx);
+        // Show the result by the buttons for a few seconds.
+        self.job_clicked = Some(Instant::now());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(RESULT_SHOWN).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// Whether this text field has the keyboard.
+    fn is_focused(&self, state: &Entity<EditableTextState>, cx: &App) -> bool {
+        self.focused.as_ref() == Some(&state.read(cx).focus_handle(cx))
     }
 
     /// Pick a PNG, JPEG or PDF and show what will print. Only the person at the
@@ -977,9 +1016,10 @@ impl TillView {
                     self.shared.set_status(Tone::Problem, error);
                 }
             }
-            Err(_) => self
-                .shared
-                .set_status(Tone::Problem, "Port must be a number from 1024 to 65535"),
+            Err(_) => self.shared.set_status(
+                Tone::Problem,
+                "Network printer mode port must be a number from 1024 to 65535",
+            ),
         }
         self.share_changed(cx);
     }
@@ -1052,6 +1092,7 @@ impl TillView {
                             field(
                                 text_input("share-port").state(self.share_port.downgrade()),
                                 "9100",
+                                self.is_focused(&self.share_port, cx),
                             )
                             .w(px(72.)),
                         )
@@ -1084,8 +1125,10 @@ impl TillView {
         let host = self.host.read(cx).as_str().trim().to_string();
         let port_text = self.port.read(cx).as_str().trim().to_string();
         let Some(port) = port_text.parse::<u16>().ok().filter(|port| *port > 0) else {
-            self.shared
-                .set_status(Tone::Problem, "Port must be a number from 1 to 65535");
+            self.shared.set_status(
+                Tone::Problem,
+                "Printer port must be a number from 1 to 65535",
+            );
             self.pull(cx);
             return;
         };
@@ -1180,11 +1223,15 @@ impl TillView {
     fn update_card(&self, cx: &mut Context<Self>, snapshot: &Snapshot) -> Option<gpui::Div> {
         let release = snapshot.update.clone()?;
         let can_install = crate::update::can_install();
-        let line = row().child(
-            div()
-                .text_sm()
-                .child(format!("Version {} is ready", release.version)),
-        );
+        let ready = if can_install {
+            format!(
+                "Version {} is ready. TapPrint will restart.",
+                release.version
+            )
+        } else {
+            format!("Version {} is ready", release.version)
+        };
+        let line = row().child(div().flex_1().min_w_0().text_sm().child(ready));
         let line = if self.updating {
             line.child(pill("Updating…".to_string(), true))
         } else {
@@ -1238,7 +1285,7 @@ impl TillView {
                 .py_2()
                 .rounded_md()
                 .bg(rgb(PAPER))
-                .text_xs()
+                .text_sm()
                 .text_color(rgb(MUTED))
                 .child(text.into())
         })
@@ -1256,8 +1303,17 @@ impl TillView {
 }
 
 impl Render for TillView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
+        self.focused = window.focused(cx);
+        match snapshot.pair_request.as_ref().map(|request| request.serial) {
+            Some(serial) if self.pair_seen != Some(serial) => {
+                self.pair_seen = Some(serial);
+                self.pair_focus.focus(window, cx);
+            }
+            Some(_) => {}
+            None => self.pair_seen = None,
+        }
         let content = match self.page {
             Page::Printer => self.printer_page(cx, &snapshot),
             Page::Websites => self.websites_page(cx, &snapshot),
@@ -1310,10 +1366,12 @@ impl Render for TillView {
                     .child(content),
             )
             .child(
-                div()
-                    .px_4()
-                    .pb_2()
-                    .child(hint(concat!("TapPrint v", env!("CARGO_PKG_VERSION")))),
+                div().px_4().pb_2().child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(MUTED))
+                        .child(concat!("TapPrint v", env!("CARGO_PKG_VERSION"))),
+                ),
             )
     }
 }
@@ -1331,6 +1389,8 @@ impl TillView {
         Some(
             div().px_4().pb_3().child(
                 card()
+                    .key_context("TapPrintPair")
+                    .track_focus(&self.pair_focus)
                     .border_color(rgb(BUSY_FG))
                     .bg(rgb(BUSY_BG))
                     .child(
@@ -1338,7 +1398,7 @@ impl TillView {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(label("WANTS TO PRINT"))
+                            .child(label("Wants to print"))
                             .child(
                                 div()
                                     .text_xs()
@@ -1360,7 +1420,7 @@ impl TillView {
                                 .rounded_md()
                                 .bg(rgb(BAD_BG))
                                 .text_color(rgb(BAD_FG))
-                                .text_xs()
+                                .text_sm()
                                 .child("Not a secure (https) site. Someone on its network could alter the page."),
                         )
                     })
@@ -1375,7 +1435,7 @@ impl TillView {
                     .children(self.note(
                         "pair",
                         format!(
-                            "{help} The page calls itself \u{201c}{}\u{201d}. Esc means Don't allow.",
+                            "{help} The page calls itself \u{201c}{}\u{201d}.",
                             request.client
                         ),
                     ))
@@ -1399,7 +1459,7 @@ impl TillView {
                             .child(
                                 button(
                                     "pair-deny",
-                                    "Don't allow",
+                                    "Don't allow (Esc)",
                                     Kind::Plain,
                                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                                         view.shared.answer_pair(serial, false);
@@ -1511,7 +1571,7 @@ impl TillView {
                 actions.child(
                     button(
                         "open-drawer",
-                        "Open drawer",
+                        "Open cash drawer",
                         if can_print {
                             Kind::Plain
                         } else {
@@ -1525,6 +1585,11 @@ impl TillView {
                 )
             });
 
+        let blocked = self.print_blocked(cx, snapshot);
+        let just_ran = self
+            .job_clicked
+            .is_some_and(|at| at.elapsed() < RESULT_SHOWN)
+            && snapshot.tone == Tone::Ready;
         let open_file = button(
             "open-file",
             if self.loading_file {
@@ -1548,12 +1613,21 @@ impl TillView {
             .child(connection)
             .child(options)
             .child(actions)
+            .children(blocked.map(|reason| hint(reason).px_1()))
+            .children(snapshot.last_job.as_ref().filter(|_| just_ran).map(|last| {
+                div()
+                    .px_1()
+                    .text_sm()
+                    .text_color(rgb(READY_FG))
+                    .child(last.clone())
+            }))
             .child(open_file)
             .children(preview)
             .children(
                 snapshot
                     .last_job
                     .as_ref()
+                    .filter(|_| !just_ran)
                     .map(|last| hint(last.clone()).px_1()),
             )
     }
@@ -1593,6 +1667,28 @@ impl TillView {
         list
     }
 
+    /// Why the test slip and drawer buttons are off, in words for the till.
+    fn print_blocked(&self, cx: &App, snapshot: &Snapshot) -> Option<&'static str> {
+        if snapshot.tone == Tone::Busy {
+            return None;
+        }
+        if snapshot.transport == Transport::Usb {
+            return match snapshot.printer_setup {
+                PrinterSetup::Configured => None,
+                PrinterSetup::MissingUsb => Some("Plug in a printer to print."),
+                _ => Some("Choose a printer above to print."),
+            };
+        }
+        if self.host.read(cx).as_str().trim().is_empty() {
+            Some("Type the printer address above to print.")
+        } else if snapshot.tcp_host.is_empty() {
+            Some("Press Save to use this address.")
+        } else {
+            // The form already says to save a changed address.
+            None
+        }
+    }
+
     fn network_address_saved(&self, cx: &App, snapshot: &Snapshot) -> bool {
         !snapshot.tcp_host.is_empty()
             && self.host.read(cx).as_str().trim() == snapshot.tcp_host
@@ -1616,12 +1712,17 @@ impl TillView {
                         field(
                             text_input("tcp-host").state(self.host.downgrade()),
                             "Printer address",
+                            self.is_focused(&self.host, cx),
                         )
                         .flex_1(),
                     )
                     .child(
-                        field(text_input("tcp-port").state(self.port.downgrade()), "9100")
-                            .w(px(68.)),
+                        field(
+                            text_input("tcp-port").state(self.port.downgrade()),
+                            "9100",
+                            self.is_focused(&self.port, cx),
+                        )
+                        .w(px(68.)),
                     )
                     .child(button(
                         "use-network",
@@ -1696,12 +1797,17 @@ impl TillView {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(label("ALLOWED WEBSITES"))
+                .child(label("Allowed websites"))
                 .child(self.info("sites", cx)),
         );
         sites = sites.children(self.note("sites", HELP_SITES));
         if snapshot.sites.is_empty() {
-            sites = sites.child(div().text_sm().text_color(rgb(MUTED)).child("None yet"));
+            sites = sites.child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(MUTED))
+                    .child("No websites yet. Your till page asks here the first time it prints."),
+            );
         }
         for origin in &snapshot.sites {
             let remove = origin.clone();
@@ -1735,7 +1841,7 @@ impl TillView {
         }
         let mut body = page().child(self.server_card(cx, snapshot)).child(sites);
         if !snapshot.clients.is_empty() {
-            let mut open = card().child(row().child(label("TILL PAGES")).child(button(
+            let mut open = card().child(row().child(label("Till pages")).child(button(
                 "clear-clients",
                 "Clear",
                 Kind::Plain,
@@ -1799,6 +1905,7 @@ impl TillView {
                             field(
                                 text_input("station-code").state(self.station_code.downgrade()),
                                 "XXXX-XXXX",
+                                self.is_focused(&self.station_code, cx),
                             )
                             .flex_1(),
                         )
@@ -1818,9 +1925,10 @@ impl TillView {
                         )),
                 );
         }
+        let bad = server.link == Link::Offline && !server.paused;
         let (state, good) = match (server.link, server.paused, server.paused_there) {
-            (_, true, _) => ("Paused here".to_string(), false),
-            (Link::Online, _, true) => ("Paused".to_string(), false),
+            (_, true, _) => ("Paused on this computer".to_string(), false),
+            (Link::Online, _, true) => ("Paused by owner".to_string(), false),
             (Link::Online, _, _) => ("Online".to_string(), true),
             (Link::Starting, _, _) => ("Connecting".to_string(), false),
             (Link::Disabled, _, _) => ("Off".to_string(), false),
@@ -1843,7 +1951,11 @@ impl TillView {
                                 .child(server.organizer.clone()),
                         ),
                 )
-                .child(pill(state, good)),
+                .child(if bad {
+                    pill_bad(state)
+                } else {
+                    pill(state, good)
+                }),
         );
         if !server.note.is_empty() && !server.paused {
             body = body.child(hint(server.note.clone()));
@@ -1866,7 +1978,7 @@ impl TillView {
             )
             .children(self.note("server-pause", help_server_pause()));
         if !server.recent.is_empty() {
-            body = body.child(divider()).child(label("RECENT JOBS"));
+            body = body.child(divider()).child(label("Recent jobs"));
             for (index, job) in server.recent.iter().enumerate() {
                 let from = if job.sender.is_empty() {
                     job.ago.clone()
@@ -1891,10 +2003,15 @@ impl TillView {
                                         .child(from),
                                 ),
                         )
-                        .child(pill(
-                            job.outcome.words().to_string(),
-                            job.outcome == ServerOutcome::Printed,
-                        )),
+                        .child(match job.outcome {
+                            ServerOutcome::CheckPaper | ServerOutcome::Failed => {
+                                pill_bad(job.outcome.words().to_string())
+                            }
+                            outcome => pill(
+                                outcome.words().to_string(),
+                                outcome == ServerOutcome::Printed,
+                            ),
+                        }),
                 );
             }
         }
@@ -1995,7 +2112,7 @@ impl TillView {
             .child(divider())
             .child(
                 row()
-                    .child(self.named("Cash drawer", "drawer-enable", cx))
+                    .child(self.named("Show drawer controls", "drawer-enable", cx))
                     .child(toggle(
                         "drawer-toggle",
                         "Show the cash drawer controls",
@@ -2007,8 +2124,9 @@ impl TillView {
                         }),
                     )),
             )
-            .children(self.note("drawer-enable", HELP_DRAWER_ENABLE))
-            .child(divider())
+            .children(self.note("drawer-enable", HELP_DRAWER_ENABLE));
+
+        let raw = card()
             .child(
                 row()
                     .child(self.named("Raw printer commands", "raw", cx))
@@ -2026,46 +2144,49 @@ impl TillView {
 
         let code = card()
             .child(
-                row().child(self.named("Pairing code", "code", cx)).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(icon_button(
-                            "reveal-code",
-                            if self.show_code { EYE_OFF } else { EYE },
-                            if self.show_code {
-                                "Hide pairing code"
-                            } else {
-                                "Show pairing code"
-                            },
-                            false,
-                            cx.listener(|view, _: &ClickEvent, _, cx| {
-                                view.show_code = !view.show_code;
-                                cx.notify();
-                            }),
-                        ))
-                        .child(button(
-                            "copy-code",
-                            if self.copied { "Copied" } else { "Copy" },
-                            Kind::Plain,
-                            cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)),
-                        ))
-                        .child(button(
-                            "new-code",
-                            if self.confirm_rotate {
-                                "Really replace?"
-                            } else {
-                                "New"
-                            },
-                            if self.confirm_rotate {
-                                Kind::Danger
-                            } else {
-                                Kind::Plain
-                            },
-                            cx.listener(|view, _: &ClickEvent, _, cx| view.rotate(cx)),
-                        )),
-                ),
+                row()
+                    .flex_wrap()
+                    .child(self.named("Pairing code", "code", cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(icon_button(
+                                "reveal-code",
+                                if self.show_code { EYE_OFF } else { EYE },
+                                if self.show_code {
+                                    "Hide pairing code"
+                                } else {
+                                    "Show pairing code"
+                                },
+                                false,
+                                cx.listener(|view, _: &ClickEvent, _, cx| {
+                                    view.show_code = !view.show_code;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(button(
+                                "copy-code",
+                                if self.copied { "Copied" } else { "Copy" },
+                                Kind::Plain,
+                                cx.listener(|view, _: &ClickEvent, _, cx| view.copy_code(cx)),
+                            ))
+                            .child(button(
+                                "new-code",
+                                if self.confirm_rotate {
+                                    "Really replace?"
+                                } else {
+                                    "New code"
+                                },
+                                if self.confirm_rotate {
+                                    Kind::Danger
+                                } else {
+                                    Kind::Plain
+                                },
+                                cx.listener(|view, _: &ClickEvent, _, cx| view.rotate(cx)),
+                            )),
+                    ),
             )
             .children(self.note("code", HELP_CODE))
             .when(self.show_code, |card| {
@@ -2094,8 +2215,10 @@ impl TillView {
             .child(self.info("about", cx));
         page()
             .child(switches)
-            .child(self.share_card(cx, snapshot))
             .child(code)
+            .child(label("Advanced").px_1())
+            .child(raw)
+            .child(self.share_card(cx, snapshot))
             .child(about)
             .children(self.note(
                 "about",
@@ -2113,9 +2236,16 @@ fn header(snapshot: &Snapshot) -> gpui::Div {
             (BUSY_BG, BUSY_FG, "Scanning")
         }
         Tone::Busy => (BUSY_BG, BUSY_FG, "Working"),
-        Tone::Problem if snapshot.printer_setup != PrinterSetup::Configured => {
-            (BAD_BG, BAD_FG, "Setup needed")
-        }
+        Tone::Problem if snapshot.printer_setup != PrinterSetup::Configured => (
+            BAD_BG,
+            BAD_FG,
+            match snapshot.printer_setup {
+                PrinterSetup::MissingUsb => "Plug in a printer",
+                PrinterSetup::SelectUsb => "Choose a printer",
+                PrinterSetup::MissingAddress => "Add printer address",
+                _ => "Setup needed",
+            },
+        ),
         Tone::Problem => (BAD_BG, BAD_FG, "Needs attention"),
     };
     let problem = snapshot.tone == Tone::Problem;
@@ -2152,7 +2282,7 @@ fn header(snapshot: &Snapshot) -> gpui::Div {
         )
         .child(
             div()
-                .text_xs()
+                .text_sm()
                 .when(problem, |line| {
                     line.px_3()
                         .py_2()
@@ -2198,7 +2328,7 @@ fn divider() -> gpui::Div {
 
 fn label(text: &'static str) -> gpui::Div {
     div()
-        .text_xs()
+        .text_sm()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(rgb(MUTED))
         .child(text)
@@ -2206,7 +2336,7 @@ fn label(text: &'static str) -> gpui::Div {
 
 /// Small grey text.
 fn hint(text: impl Into<SharedString>) -> gpui::Div {
-    div().text_xs().text_color(rgb(MUTED)).child(text.into())
+    div().text_sm().text_color(rgb(MUTED)).child(text.into())
 }
 
 /// A small rounded tag, green when it reports something good.
@@ -2224,6 +2354,11 @@ fn pill(text: String, good: bool) -> gpui::Div {
         .text_color(rgb(foreground))
         .text_xs()
         .child(text)
+}
+
+/// A tag for something that went wrong.
+fn pill_bad(text: String) -> gpui::Div {
+    pill(text, false).bg(rgb(BAD_BG)).text_color(rgb(BAD_FG))
 }
 
 fn grouped_code(code: &str) -> String {
@@ -2423,6 +2558,7 @@ fn option_row(
 fn field(
     input: gpui_ce_elements::editable_text::EditableTextElement,
     placeholder: &'static str,
+    focused: bool,
 ) -> gpui_ce_elements::editable_text::EditableTextElement {
     input
         .placeholder(placeholder)
@@ -2435,7 +2571,7 @@ fn field(
         .py(px(5.))
         .bg(rgb(PAPER))
         .border_1()
-        .border_color(rgb(SOFT))
+        .border_color(rgb(if focused { READY_FG } else { SOFT }))
         .rounded_md()
         .text_sm()
 }

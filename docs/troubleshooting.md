@@ -62,7 +62,7 @@ Open the **Printer** tab and click the right printer. With two of the same model
 
 ## The cash drawer does not open
 
-The drawer controls are hidden until you turn on **Cash drawer** in **Settings**. Then, on the **Printer** tab, beside **Cash drawer**, choose **Pin 5**, then click **Open drawer**. For a heavy drawer that needs a longer pulse, raise `drawer_on_ms` in the [settings file](api.md#settings-file).
+The drawer controls are hidden until you turn on **Show drawer controls** in **Settings**. Then, on the **Printer** tab, beside **Cash drawer**, choose **Pin 5**, then click **Open cash drawer**. For a heavy drawer that needs a longer pulse, raise `drawer_on_ms` in the [settings file](api.md#settings-file).
 
 ## The receipt looks wrong
 

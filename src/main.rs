@@ -66,7 +66,11 @@ fn main() -> ExitCode {
     if headless {
         return serve(&shared);
     }
-    ui::run(shared);
+    // Started by the login item: the menu-bar icon only, no window.
+    let hidden = arguments
+        .iter()
+        .any(|argument| argument == autostart::HIDDEN);
+    ui::run(shared, hidden);
     ExitCode::SUCCESS
 }
 
