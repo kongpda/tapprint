@@ -1,6 +1,6 @@
 [package]
 name = "tapprint"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 edition = "2024"
 # The oldest Rust that builds every dependency (set by gpui-ce).
 rust-version = "1.95"
@@ -20,7 +20,7 @@ gpui-tray = { version = "0.3", default-features = false, features = ["gpui-ce", 
 gpui_ce_elements = "0.3"
 gpui_ce_platform = "0.3"
 # The printing itself: image to dots, ESC/POS, USB and network sending.
-tapprint-core = { path = "crates/tapprint-core", version = "0.1.0-rc.7" }
+tapprint-core = { path = "crates/tapprint-core", version = "0.1.0-rc.8" }
 # Draws the preview of an opened file. gpui already builds it, so it adds no code.
 image = { version = "0.25", default-features = false }
 # Verifies the signature on an update before it is installed.

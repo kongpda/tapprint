@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-rc.8
 
 - **Open a file…** on the Printer tab opens a PNG, JPEG or PDF from this computer and shows it exactly as it will print, then **Print** sends it at the paper width. Each PDF page prints as its own slip, up to 50 pages and 5 m of paper. Photos are dithered, and phone photos print the right way up. Pages and the print server still send only PNG.
 - A USB write that fails after it started is reported as "check the paper", not as safe to retry, so a server job is not printed twice.
@@ -8,6 +8,15 @@
 - A second printer of the same model is no longer taken for the receipt printer when that one is switched off.
 - The browser client cleans `clientName` to what the header can carry, so a name in Khmer or another script no longer makes every call fail as unreachable. A Content-Security-Policy warning no longer sticks after HTTPS works.
 - `tapprint print` says a timed-out job may still print, instead of "not running".
+- Network printer mode drops a request from a web page instead of sending its body to the printer, so only sites allowed in the window can print. A "ready?" query sent right after a job is answered, not printed.
+- A print-server job whose next slip the server refuses reports the slips already printed, so they are not offered again. After a paper-out or offline printer, TapPrint waits its normal interval before asking again instead of five times a second.
+- A network printer that drops the connection on the paper check is reported as safe to retry, not "check the paper".
+- A page that sends its receipt a byte at a time is cut off after 20 s, so it cannot hold the print queue. A broken picture from the print server no longer stops server printing until restart.
+- **Only secure websites** is on for new installs. Existing settings are unchanged.
+- Start at login opens TapPrint in the menu bar or tray with no window. The window still opens when a site asks to be allowed.
+- The window says why **Print test slip** is unavailable and shows the result next to the buttons. Text fields show focus, status and help text is larger with more contrast, and the Websites tab explains its empty list.
+- Esc turns a site down only while its request is on screen. Offline and failed print-server states show in red, and "Paused on this computer" is told apart from "Paused by owner".
+- Settings groups **Raw printer commands** and **Network printer mode** under Advanced, and the drawer switch is now **Show drawer controls**. The tray menu says **Open TapPrint** and **Quit TapPrint** and ticks the printer connection in use. Buttons and menus use the same words.
 - Clearer message for a damaged settings file. The README and troubleshooting guide cover Start at login, a site turned down by mistake, and updates for test builds.
 
 ## 0.1.0-rc.7

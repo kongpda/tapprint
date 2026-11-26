@@ -6077,7 +6077,7 @@ dependencies = [
 
 [[package]]
 name = "tapprint"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "getrandom 0.4.3",
  "gpui-ce",
@@ -6100,7 +6100,7 @@ dependencies = [
 
 [[package]]
 name = "tapprint-core"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "hayro",
  "image",
